@@ -1,0 +1,9 @@
+[package]
+name = "dbg-visualizer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytes = "1.11.0"
+indexmap = "2.12.1"
+regex = "1.12.2"
