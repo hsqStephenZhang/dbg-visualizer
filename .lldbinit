@@ -1,0 +1,4 @@
+breakpoint set --file main.rs --line 60
+command script import src/lldb_linter.py
+run
+c

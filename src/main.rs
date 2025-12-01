@@ -53,9 +53,11 @@ static DEBUG_PRINT_BYTES: extern "C" fn(usize) -> *const c_char = debug_print_by
 static DEBUG_PRINT_FREE: extern "C" fn(usize) = debug_print_free;
 
 fn main() {
-    let map = IndexMap::from([(1, "one"), (2, "two"), (3, "three")]);
+    let mut map = IndexMap::from([(1, "one"), (2, "two"), (3, "three")]);
     let bytes = Bytes::from("hello world");
     println!("{:?}", map);
     println!("{:?}", bytes);
     println!("map breakpoint here");
+    map.insert(4, "four");
+    println!("new breakpoint here");
 }
