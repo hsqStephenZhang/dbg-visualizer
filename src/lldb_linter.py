@@ -63,7 +63,40 @@ def free_rust_cstring(target: lldb.SBTarget, addr: int):
     except Exception:
         pass  # Ignore errors during free
 
+def get_default_summary(valobj):
+    """
+    { field1 = val1, field2 = val2 }
+    """
+    v = valobj.GetValue()
+    if v is not None:
+        return v
+
+    num_children = valobj.GetNumChildren()
+    if num_children == 0:
+        return "{}"
+
+    child_strs = []
+    max_display = 10
+    for i in range(min(num_children, max_display)):
+        child = valobj.GetChildAtIndex(i)
+        name = child.GetName()
+        
+        val = child.GetSummary()
+        if not val:
+            val = child.GetValue()
+        if not val:
+            val = get_default_summary(child)
+            
+        child_strs.append(f"{name} = {val}")
+
+    if num_children > max_display:
+        child_strs.append("...")
+
+    return "{ " + ", ".join(child_strs) + " }"
+    
+
 # valobj might be temperal object if user call `p xxx` instead of `v xxx`
+# in that case, we cannot get address of the object
 def generic_summary_provider(valobj: lldb.SBValue, internal_dict):
     typename = valobj.GetTypeName()
 
@@ -75,7 +108,10 @@ def generic_summary_provider(valobj: lldb.SBValue, internal_dict):
     addr = get_object_address(valobj)
 
     if addr == lldb.LLDB_INVALID_ADDRESS or addr == 0:
-        return f"<error: variable({hex(addr)}) is in register (not memory), cannot pass address>"
+        try:
+            return get_default_summary(valobj)
+        except Exception:
+            return "<unable to get address>"
     elif isinstance(addr, str):
         return addr  # return the error message from get_object_address
 
