@@ -2,7 +2,7 @@ import gdb
 
 tbl = {
     "regex::regex::string::Captures": "debug_print_regex_captures",
-    "indexmap::map::IndexMap<i32, &str, std::hash::random::RandomState>": "debug_print_indexmap",
+    "indexmap::map::IndexMap<i32, &str, std::hash::random::RandomState>": "debug_print_indexmap_i32_str",
     "bytes::bytes::Bytes": "debug_print_bytes",
 }
 
