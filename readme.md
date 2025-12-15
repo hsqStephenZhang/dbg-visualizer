@@ -1,3 +1,7 @@
+## usage 
+
+for gdb, install `https://github.com/cyrus-and/gdb-dashboard` and add project path to `safe-path`
+
 ## How does it work
 
 rust has [debugger_visualizer](https://rust-lang.github.io/rfcs/3191-debugger-visualizer.html) for customize debugger view
