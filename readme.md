@@ -1,67 +1,67 @@
-## How does it work
+# Rust debugger visualizer
 
-rust has [debugger_visualizer](https://rust-lang.github.io/rfcs/3191-debugger-visualizer.html) for customize debugger view
-we could provide ffi functions for display rust Structs that has implemented Debug trait
+通过一次类型注册，在 GDB、LLDB 和 CodeLLDB 中选择调试器原生视图，或使用 Rust 类型自己的 `Debug` / `Display` 输出。格式化直接写入有界缓冲区；容器支持按需分页展开。
 
-for `IndexMap<i32, &str>` we could generate such functions:
+默认配置为 `native` 和 `execution=manual`，加载脚本不会自动运行 Rust 格式化函数。显式 `dbgvis print` 默认使用 Debug；开启 automatic 后，变量窗口使用所选模式。
 
-```rust
-#[unsafe(no_mangle)]
-pub extern "C" fn debug_print_indexmap_i32_str(addr: usize) -> *const c_char {
-    unsafe {
-        if addr == 0 {
-            let s = CString::new("<null>").unwrap();
-            return s.into_raw();
-        }
+## 快速开始
 
-        let ptr = addr as *const IndexMap<i32, &str>;
-        let map = &*ptr;
-
-        let formatted = format!("{:?}", map);
-        let s = CString::new(formatted).unwrap();
-        s.into_raw()
-    }
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn debug_print_free(s: usize) {
-    if s != 0 {
-        unsafe {
-            let _ = CString::from_raw(s as *mut c_char);
-        }
-    }
-}
+```sh
+cargo build
+rust-gdb -iex "add-auto-load-safe-path $(pwd)/target/debug/dbg-visualizer" target/debug/dbg-visualizer
 ```
 
-and `debug_print_free` **must** be called to deallocate the CString we just allocated after the debugger has got the actual display string.
+在 GDB 中：
 
-notice that we use `usize` as the address's argument type, which is a work-around for lldb, since its type conversion is pretty annoying and it's the simpliest way i could work it out.
-
-in lldb, we could see(the difference between `v` and `p` is that `p` cannot access the memory of the variable, so we could not evalute rust's ffi function but invoke the default printer method):
-
-```txt
-v map 
-(indexmap::map::IndexMap<int, &str, std::hash::random::RandomState>) map = "{1: \"one\", 2: \"two\", 3: \"three\"}"
-p map 
-(indexmap::map::IndexMap<int, &str, std::hash::random::RandomState>) { core = { indices = { raw = { table = { bucket_mask = 3, ctrl = { pointer = "\U00000002\U00000015\xffT\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\U00000002\U00000015\xffT" }, growth_left = 0, items = 3 }, alloc = {}, marker = {} } }, entries = size=3 }, hash_builder = { k0 = 11368365513805002518, k1 = 11841700729499363736 } }
+```text
+break dbg_visualizer::checkpoint
+run
+up
+dbgvis print bytes
+dbgvis print --mode display point
+dbgvis print --buffer 8 map
+dbgvis page --start 0 --count 2 map
+dbgvis config summary.mode debug
+dbgvis config execution automatic
+dbgvis config children.mode structured
+print map
 ```
 
-## how to use
+在 LLDB 中：
 
-to use that in gdb, the `debugger_visualizer` at the beginning of `main.rs` has already written the gdb script into a section of the final binary, and gdb/rust-gdb will recognize that, just call `print bytes` or `print map`
+```sh
+lldb target/debug/dbg-visualizer
+```
 
-for lldb, we have to write another script since it does not provide such extension for binary, we have to mannual load the script by `command script import src/lldb_linter.py`, or you could write this command into `.lldbinit` file and use `command source .lldbinit`. see [lldb python api](https://lldb.llvm.org/use/variable.html#python-scripting), after that, call `v map` or `p map` to see the difference.
+```text
+command source .lldbinit
+dbgvis print --mode display point
+dbgvis config summary.mode debug
+dbgvis config execution automatic
+dbgvis config children.mode structured
+frame variable map
+```
 
-for codelldb in vscode, we could add such command to its `initCommands` in `launch.json`.
+VS Code 使用仓库的 `.vscode/launch.json`。在 `checkpoint` 停下后选择调用栈中的 `main` 帧，调试控制台使用同样的 `dbgvis` 命令。
 
-Wala!
+## 文档
 
-## TODOs
+- [使用与注册指南](docs/使用指南.md)：配置、加载、注册新类型、容器适配和限制。
+- [协议 v1](docs/协议-v1.md)：入口、布局、缓冲区和错误码。
+- [实现计划](docs/实现计划.md)：原始需求及实施阶段。
+- [验收记录](docs/验收记录.md)：测试范围、支持矩阵和性能基线。
 
-there are many things we could work on top this POC.
-since the `debug_print_xxx`'s argument is usize, there is nothing prevent you from invoking it with some arbituary pointer.
-to make it more solid, we should add type checking in gdb scripts. for lldb, we could simply rely on its regex's matching like 
-`type summary add "bytes::bytes::Bytes" -F lldb_linter.generic_summary_provider -x -h "^bytes::bytes::Bytes$" --category Rust` which 
-will only we called if the full path of the type matches the regex pattern. 
+## 验证
 
-and we could provide some proc-macros to generate these gdb/lldb script automatically, saving the trouble of hardcoding them(trust me, they are pretty trivial but boring)
+```sh
+cargo test --offline --workspace
+cargo clippy --offline --workspace --all-targets -- -D warnings
+python3 -m unittest discover -s tests -p 'test_*.py'
+python3 tests/integration/build_profiles.py
+python3 tests/integration/run.py --faults --core --benchmark
+python3 tests/integration/codelldb.py --adapter /path/to/extension/adapter/codelldb
+```
+
+首次离线验证前运行 `cargo fetch --locked`。集成测试需要 Linux 本地 ptrace 权限；每个 debugger 子进程有外部超时限制。
+
+当前支持 Linux x86_64、本地调试、单一可执行程序注册表。有界输出不保证用户 `fmt` 纯、无分配或不会阻塞。core dump 使用原生视图；完整支持范围见验收记录。

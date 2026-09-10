@@ -1,4 +1,5 @@
-breakpoint set --file main.rs --line 60
-command script import src/lldb_linter.py
+command script import debugger/lldb/dbgvis_lldb.py
+dbgvis-install-hook
+breakpoint set --name dbg_visualizer::checkpoint
 run
-c
+up

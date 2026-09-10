@@ -10,14 +10,15 @@
             "request": "launch",
             "cargo": {
                 "args": [
-                    "run",
+                    "build",
                     "--bin=dbg-visualizer"
                 ]
             },
             "args": [],
             "initCommands": [
-                "command script import src/lldb_linter.py"
-            ]
+                "command script import \"${workspaceFolder}/debugger/lldb/dbgvis_lldb.py\""
+            ],
+            "preRunCommands": ["dbgvis-install-hook"]
         }
     ]
 }

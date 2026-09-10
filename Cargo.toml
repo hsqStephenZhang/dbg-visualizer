@@ -3,7 +3,32 @@ name = "dbg-visualizer"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["crates/visualizer-runtime", "crates/visualizer-adapters"]
+resolver = "2"
+
+[features]
+default = ["visualizer"]
+visualizer = ["dep:visualizer-runtime", "dep:visualizer-adapters"]
+
 [dependencies]
 bytes = "1.11.0"
 indexmap = "2.12.1"
-regex = "1.12.2"
+visualizer-runtime = { path = "crates/visualizer-runtime", optional = true }
+visualizer-adapters = { path = "crates/visualizer-adapters", optional = true }
+
+[profile.release]
+debug = 2
+
+[profile.release-lto]
+inherits = "release"
+lto = true
+codegen-units = 1
+
+[profile.abort]
+inherits = "dev"
+panic = "abort"
+
+[[example]]
+name = "faults"
+required-features = ["visualizer"]

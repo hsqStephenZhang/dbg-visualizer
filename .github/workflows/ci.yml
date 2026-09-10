@@ -1,0 +1,29 @@
+name: debugger visualizer
+on: [push, pull_request]
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install debuggers
+        run: sudo apt-get update && sudo apt-get install -y gdb lldb
+      - run: cargo fetch --locked
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --offline --workspace --all-targets -- -D warnings
+      - run: cargo test --offline --workspace
+      - run: python3 -m unittest discover -s tests -p 'test_*.py'
+      - run: python3 tests/integration/build_profiles.py
+      - run: python3 tests/integration/run.py --faults --core
+        timeout-minutes: 5
+      - name: Download CodeLLDB 1.12.2
+        run: |
+          curl --fail --location --output /tmp/codelldb.vsix https://github.com/vadimcn/codelldb/releases/download/v1.12.2/codelldb-linux-x64.vsix
+          unzip -q /tmp/codelldb.vsix -d /tmp/dbgvis-codelldb
+      - run: python3 tests/integration/codelldb.py --adapter /tmp/dbgvis-codelldb/extension/adapter/codelldb
+        timeout-minutes: 2
