@@ -165,11 +165,33 @@ fn errors_limits_nul_and_recovery() {
 }
 
 #[test]
-fn duplicate_registration_is_rejected() {
+fn duplicate_same_type_registration_is_coalesced() {
     let root = Registration::<u32>::new::<u32>("anchor").debug().finish();
-    assert!(std::panic::catch_unwind(|| runtime(vec![root, root])).is_err());
     let other_marker = Registration::<u32>::new::<i32>("other").display().finish();
-    assert!(std::panic::catch_unwind(|| runtime(vec![root, other_marker])).is_err());
+    let runtime = runtime(vec![root, other_marker]);
+    let entries = runtime.entries.get().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].capabilities, DEBUG | DISPLAY);
+}
+
+#[test]
+fn duplicate_type_name_with_different_shape_is_rejected() {
+    let mut roots = vec![Registration::<u32>::new::<u32>("anchor").debug().finish()];
+    let mut incompatible = Registration::<u64>::new::<i64>("other").debug().finish();
+    incompatible.name = roots[0].name;
+    roots.push(incompatible);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| coalesce_roots(&mut roots)))
+            .is_err()
+    );
+}
+
+#[test]
+fn duplicate_marker_for_different_types_is_rejected() {
+    let marker = Registration::<u32>::new::<u32>("anchor").debug().finish();
+    let mut other = Registration::<u64>::new::<u32>("other").debug().finish();
+    other.name = "u64";
+    assert!(std::panic::catch_unwind(|| coalesce_roots(&mut vec![marker, other])).is_err());
 }
 
 #[test]

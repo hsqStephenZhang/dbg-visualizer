@@ -10,5 +10,26 @@
         "**/.hg": true,
         "**/.DS_Store": true,
         "**/Thumbs.db": true
+    },
+    "rust-analyzer.rustc.source": "discover",
+    "rust-analyzer.linkedProjects": [
+        "${workspaceFolder}/Cargo.toml",
+        "${workspaceFolder}/tools/auto-register/Cargo.toml"
+    ],
+    "rust-analyzer.checkOnSave": true,
+    "rust-analyzer.check.command": "clippy",
+    "rust-analyzer.cargo.features": "all",
+    "rust-analyzer.cargo.buildScripts.enable": true,
+    "rust-analyzer.procMacro.enable": true,
+    "rust-analyzer.files.exclude": [
+        "${workspaceFolder}/target/**",
+        "${workspaceFolder}/tools/auto-register/target/**"
+    ],
+    "rust-analyzer.rustfmt.extraArgs": ["--edition", "2024"],
+    "rust-analyzer.cargo.extraEnv": {
+        "RUSTC_BOOTSTRAP": "1"
+    },
+    "rust-analyzer.check.extraEnv": {
+        "RUSTC_BOOTSTRAP": "1"
     }
 }
