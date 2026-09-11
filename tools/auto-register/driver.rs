@@ -35,7 +35,10 @@ fn write_changed(path: &std::path::Path, contents: &str) {
 
 // Resolve actual publicly exported paths, not diagnostic type-name strings.
 fn paths(tcx: TyCtxt<'_>) -> HashMap<DefId, String> {
-    let mut queue = VecDeque::from([(CRATE_DEF_ID.to_def_id(), "crate".to_string())]);
+    // Visit external crates before the local root.  A local `use dbgvis::Visualize`
+    // re-export otherwise wins the map entry and produces `crate::register_type!`
+    // instead of the actual facade path.
+    let mut queue = VecDeque::new();
     for &cnum in tcx.crates(()) {
         let source = tcx.used_crate_source(cnum);
         for (alias, entry) in tcx.sess.opts.externs.iter() {
@@ -68,6 +71,7 @@ fn paths(tcx: TyCtxt<'_>) -> HashMap<DefId, String> {
             queue.push_back((cnum.as_def_id(), "::std".into()));
         }
     }
+    queue.push_back((CRATE_DEF_ID.to_def_id(), "crate".to_string()));
     let mut result = HashMap::new();
     let mut visited = HashSet::new();
     while let Some((module, prefix)) = queue.pop_front() {
@@ -102,29 +106,66 @@ fn paths(tcx: TyCtxt<'_>) -> HashMap<DefId, String> {
     result
 }
 
+struct Rendered {
+    expr: String,
+    borrowed: bool,
+}
+
 fn render<'tcx>(
     tcx: TyCtxt<'tcx>,
     ty: Ty<'tcx>,
     paths: &HashMap<DefId, String>,
-) -> Result<String, &'static str> {
+) -> Result<Rendered, &'static str> {
     Ok(match ty.kind() {
-        ty::Bool => "bool".into(),
-        ty::Char => "char".into(),
-        ty::Int(i) => i.name_str().into(),
-        ty::Uint(i) => i.name_str().into(),
-        ty::Float(i) => i.name_str().into(),
-        ty::Tuple(fields) => format!(
-            "({})",
-            fields
-                .iter()
-                .map(|t| render(tcx, t, paths).map(|s| format!("{s},")))
-                .collect::<Result<String, _>>()?
-        ),
-        ty::Array(t, n) => format!(
-            "[{}; {}]",
-            render(tcx, *t, paths)?,
-            n.try_to_target_usize(tcx).ok_or("non-usize array length")?
-        ),
+        ty::Bool => Rendered {
+            expr: "bool".into(),
+            borrowed: false,
+        },
+        ty::Char => Rendered {
+            expr: "char".into(),
+            borrowed: false,
+        },
+        ty::Int(i) => Rendered {
+            expr: i.name_str().into(),
+            borrowed: false,
+        },
+        ty::Uint(i) => Rendered {
+            expr: i.name_str().into(),
+            borrowed: false,
+        },
+        ty::Float(i) => Rendered {
+            expr: i.name_str().into(),
+            borrowed: false,
+        },
+        ty::Str => Rendered {
+            expr: "str".into(),
+            borrowed: false,
+        },
+        ty::Tuple(fields) => {
+            let mut borrowed = false;
+            let mut values = String::new();
+            for field in fields.iter() {
+                let rendered = render(tcx, field, paths)?;
+                borrowed |= rendered.borrowed;
+                values.push_str(&rendered.expr);
+                values.push(',');
+            }
+            Rendered {
+                expr: format!("({values})"),
+                borrowed,
+            }
+        }
+        ty::Array(t, n) => {
+            let rendered = render(tcx, *t, paths)?;
+            Rendered {
+                expr: format!(
+                    "[{}; {}]",
+                    rendered.expr,
+                    n.try_to_target_usize(tcx).ok_or("non-usize array length")?
+                ),
+                borrowed: rendered.borrowed,
+            }
+        }
         ty::Adt(adt, args) => {
             let path = paths
                 .get(&adt.did())
@@ -136,7 +177,8 @@ fn render<'tcx>(
                 let param = &params[count - 1];
                 if let ty::GenericParamDefKind::Type {
                     has_default: true, ..
-                } = param.kind && tcx
+                } = param.kind
+                    && tcx
                         .type_of(param.def_id)
                         .instantiate(tcx, args)
                         .skip_norm_wip()
@@ -148,25 +190,46 @@ fn render<'tcx>(
                 break;
             }
             let mut values = Vec::new();
+            let mut borrowed = false;
             for arg in &args[..count] {
                 values.push(match arg.kind() {
-                    ty::GenericArgKind::Type(t) => render(tcx, t, paths)?,
+                    ty::GenericArgKind::Type(t) => {
+                        let rendered = render(tcx, t, paths)?;
+                        borrowed |= rendered.borrowed;
+                        rendered.expr
+                    }
                     ty::GenericArgKind::Const(c) => c
                         .try_to_target_usize(tcx)
                         .ok_or("unsupported const argument")?
                         .to_string(),
+                    // One synthetic lifetime is enough for a registration alias;
+                    // the register proc-macro substitutes it with 'static only in
+                    // the DWARF anchor while retaining the generic formatter.
                     ty::GenericArgKind::Lifetime(_) => {
-                        return Err("borrowed type: lifetime proof not implemented");
+                        borrowed = true;
+                        "'a".into()
                     }
                 });
             }
-            if values.is_empty() {
+            let expr = if values.is_empty() {
                 path.clone()
             } else {
                 format!("{path}<{}>", values.join(", "))
+            };
+            Rendered { expr, borrowed }
+        }
+        ty::Ref(_, inner, mutability) => {
+            let rendered = render(tcx, *inner, paths)?;
+            let mutability = if *mutability == ty::Mutability::Mut {
+                "mut "
+            } else {
+                ""
+            };
+            Rendered {
+                expr: format!("&'a {mutability}{}", rendered.expr),
+                borrowed: true,
             }
         }
-        ty::Ref(..) => return Err("borrowed type: lifetime proof not implemented"),
         _ => return Err("unsupported/anonymous/unsized type"),
     })
 }
@@ -228,7 +291,9 @@ impl Callbacks for Driver {
                     .then(|| (*did, path.rsplit_once("::").unwrap().0.to_string()))
             })
             .expect("dbgvis dependency must be used (call enable!())");
-        let trait_ids: Vec<_> = paths.keys().filter_map(|did| {
+        let trait_ids: Vec<_> = paths
+            .keys()
+            .filter_map(|did| {
                 (tcx.def_kind(*did) == DefKind::Trait
                     && (*did == facade.0
                         || (tcx.crate_name(did.krate).as_str() == "core"
@@ -306,9 +371,17 @@ impl Callbacks for Driver {
         let mut lines = BTreeMap::new();
         let mut report = BTreeMap::new();
         for t in candidates {
+            // MIR contains many compiler-generated/reference temporaries (for
+            // example the argument passed to black_box). Register the actual
+            // value type instead; a reference's unconditional Visualize impl
+            // would otherwise defer validation and generate a failing root for
+            // an unformattable referent.
+            if matches!(t.kind(), ty::Ref(..)) {
+                continue;
+            }
             let name = t.to_string(); // Diagnostic only; never used as generated Rust.
-            let expression = match render(tcx, t, &paths) {
-                Ok(expr) => expr,
+            let rendered = match render(tcx, t, &paths) {
+                Ok(rendered) => rendered,
                 Err(reason) => {
                     report.insert(name, format!("SKIP\t{reason}"));
                     continue;
@@ -326,11 +399,26 @@ impl Callbacks for Driver {
                 report.insert(name, "SKIP\tno formatting trait".into());
                 continue;
             }
-            report.insert(name, format!("CANDIDATE\t{expression}"));
-            lines.insert(
-                expression.clone(),
-                format!("{}::register_type!({expression});\n", facade.1),
-            );
+            report.insert(name, format!("CANDIDATE\t{}", rendered.expr));
+            if rendered.borrowed {
+                // A generic alias lets the existing proc-macro preserve the
+                // formatter's lifetime while giving GDB a concrete anchor.
+                let hash = rendered.expr.bytes().fold(0xcbf29ce484222325u64, |h, b| {
+                    (h ^ b as u64).wrapping_mul(0x100000001b3)
+                });
+                lines.insert(
+                    rendered.expr.clone(),
+                    format!(
+                        "#[allow(non_camel_case_types)]\n#[{}::register]\ntype __DbgvisAuto_{hash:016x}<'a> = {};\n",
+                        facade.1, rendered.expr
+                    ),
+                );
+            } else {
+                lines.insert(
+                    rendered.expr.clone(),
+                    format!("{}::register_type!({});\n", facade.1, rendered.expr),
+                );
+            }
         }
         assert!(lines.len() <= 4096, "dbgvis auto: candidate limit exceeded");
         write_changed(&self.plan, &lines.into_values().collect::<String>());

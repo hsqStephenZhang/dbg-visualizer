@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, DefaultHasher};
 use std::marker::PhantomData;
 
-#[derive(Visualize)]
 struct HasherPolicy;
 impl std::hash::BuildHasher for HasherPolicy {
     type Hasher = DefaultHasher;
@@ -12,58 +11,40 @@ impl std::hash::BuildHasher for HasherPolicy {
     }
 }
 
-#[derive(Visualize)]
-struct Point {
-    x: i32,
-    y: i32,
+#[derive(Debug)]
+pub struct Point {
+    pub x: i32,
+    pub y: i32,
 }
 
-#[derive(Visualize)]
+#[derive(Debug)]
 struct Marker;
 
-#[derive(Visualize)]
+#[derive(Debug)]
 struct Counter {
     count: u32,
 }
-#[derive(Visualize)]
+#[derive(Debug)]
 struct Borrowed<'a, T, Policy, const N: usize> {
     label: &'a str,
     value: T,
     marker: PhantomData<Policy>,
 }
 
-#[derive(Visualize)]
+#[derive(Debug)]
 enum State<T> {
     Ready { value: T },
     Pending,
 }
 
-#[derive(Visualize)]
+#[derive(Debug)]
 struct AppState {
     points: HashMap<String, Vec<Option<Point>>>,
     bytes: bytes::Bytes,
     ordered: indexmap::IndexMap<u32, String>,
     address: std::net::SocketAddr,
     state: State<u32>,
-    #[dbgvis(skip)]
     secret: Marker,
-}
-
-mod third_party_roots {
-    dbgvis::register_type!(std::collections::HashMap<String, Vec<Option<super::Point>>>);
-    dbgvis::register_type!(std::collections::HashMap<(), u64, super::HasherPolicy>);
-    dbgvis::register_type!(bytes::Bytes; auto, debug);
-    dbgvis::register_type!(indexmap::IndexMap<u32, String>);
-    #[dbgvis::register]
-    type IndexBorrowed<'a> =
-        indexmap::IndexMap<&'a str, u64, std::hash::BuildHasherDefault<std::hash::DefaultHasher>>;
-    dbgvis::register_type!(indexmap::IndexMap<[u8; 2], Vec<()>>);
-    dbgvis::register_type!(hashbrown::HashMap<u32, Vec<u8>, std::hash::BuildHasherDefault<std::hash::DefaultHasher>>);
-    dbgvis::register_type!(std::net::SocketAddr; auto, debug, display);
-    #[dbgvis::register(visualize)]
-    type Borrowed<'a> = super::Borrowed<'a, Vec<u8>, super::Marker, 17>;
-    #[dbgvis::register(visualize)]
-    type BorrowedOther<'a> = super::Borrowed<'a, Vec<u8>, super::Marker, 19>;
 }
 
 #[inline(never)]

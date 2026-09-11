@@ -42,6 +42,7 @@ def plan(output):
 
 
 POSITIVE = r'''
+use dv::Visualize;
 #[derive(dv::Visualize)] struct Point { x: u32 }
 #[dv::register(display)] struct Explicit;
 impl std::fmt::Display for Explicit {
@@ -124,7 +125,8 @@ codegen-units = 1
             assert "SKIP\ttype is not accessible/nameable from root\t" in report
             assert "SKIP\ttype is not accessible/nameable from root\tmain::Local" in report
             assert "SKIP\ttype is not accessible/nameable from root\thidden::Secret" in report
-            assert "borrowed type: lifetime proof not implemented" in report
+            assert "Borrowed<'a" in report
+            assert "type __DbgvisAuto_" in generated
             binary = Path(env["CARGO_TARGET_DIR"]) / ("release" if profile else "debug") / "auto_contract"
             run([binary], marker="CONTRACT_EXECUTED")
             before = path.stat().st_mtime_ns
