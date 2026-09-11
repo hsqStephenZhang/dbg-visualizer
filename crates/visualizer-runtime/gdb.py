@@ -12,6 +12,21 @@ DEFAULTS = {"summary.mode": "native", "execution": "manual", "summary.buffer_byt
             "summary.alternate": False, "format.max_depth": 32, "format.max_nodes": 4096,
             "execution.timeout_ms": 200}
 
+COMMAND_ALIASES = {
+    "p": "print",
+    "-p": "print",
+    "c": "config",
+    "-c": "config",
+    "t": "types",
+    "-t": "types",
+    "s": "status",
+    "-s": "status",
+    "rf": "refresh",
+    "-rf": "refresh",
+    "rs": "reset",
+    "-rs": "reset",
+}
+
 
 class NoMatch(Exception):
     pass
@@ -290,9 +305,12 @@ class Session:
 
     def command(self, argument):
         args = shlex.split(argument)
-        if not args or args[0] == "help":
-            return "dbgvis print [--mode auto|visualize|debug|display|native] [--buffer N] [--alternate] EXPR\ndbgvis config [--type NAME] KEY VALUE\ndbgvis types | status | refresh | reset"
+        if not args or args[0] in ("help", "h", "-h", "--help"):
+            return ("dbgvis print|-p [-m MODE] [-b BYTES] [-a] EXPR\n"
+                    "dbgvis config|-c [-t NAME] KEY VALUE\n"
+                    "dbgvis types|-t | status|-s | refresh|-rf | reset|-rs")
         command = args.pop(0)
+        command = COMMAND_ALIASES.get(command, command)
         if command == "reset":
             self.config = dict(DEFAULTS)
             self.overrides.clear()
@@ -312,7 +330,7 @@ class Session:
             target = self.config
             if not args:
                 return json.dumps(self.config, ensure_ascii=False)
-            if args[0] == "--type":
+            if args[0] in ("--type", "-t"):
                 self.discover()
                 if len(args) < 4 or args[1] not in {e["name"] for e in self.entries}:
                     raise RuntimeError("unknown canonical type; see dbgvis types")
@@ -338,18 +356,30 @@ class Session:
             return f"{key}={value}"
         if command == "print":
             overrides = {}
-            while args and args[0].startswith("--"):
+            while args and (args[0].startswith("--") or args[0] in ("-a", "-m", "-b")
+                            or args[0].startswith(("-m=", "-b="))):
                 flag = args.pop(0)
-                if flag == "--alternate":
+                if flag in ("--alternate", "-a"):
                     overrides["summary.alternate"] = True
-                elif flag in ("--mode", "--buffer") and args:
-                    value = args.pop(0)
-                    if flag == "--mode":
+                elif (flag in ("--mode", "-m", "--buffer", "-b")
+                      or flag.startswith(("--mode=", "--buffer=", "-m=", "-b="))):
+                    if "=" in flag:
+                        option, value = flag.split("=", 1)
+                        option = {"--mode": "--mode", "--buffer": "--buffer",
+                                  "-m": "-m", "-b": "-b"}.get(option, option)
+                    else:
+                        option = flag
+                        if not args:
+                            raise RuntimeError("unknown or incomplete print option")
+                        value = args.pop(0)
+                    if option in ("--mode", "-m"):
                         if value not in {"native", *MODES}:
                             raise RuntimeError("invalid mode")
                         overrides["summary.mode"] = value
-                    else:
+                    elif option in ("--buffer", "-b"):
                         overrides["summary.buffer_bytes"] = int(value)
+                    else:
+                        raise RuntimeError("unknown or incomplete print option")
                 else:
                     raise RuntimeError("unknown or incomplete print option")
             if not args:
