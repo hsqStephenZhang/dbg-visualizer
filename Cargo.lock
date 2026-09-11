@@ -14,9 +14,6 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "dbgvis",
- "demo-a",
- "demo-b",
- "demo-c",
  "hashbrown",
  "indexmap",
 ]
@@ -40,27 +37,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "demo-a"
-version = "0.1.0"
-dependencies = [
- "dbgvis",
-]
-
-[[package]]
-name = "demo-b"
-version = "0.1.0"
-dependencies = [
- "dbgvis",
-]
-
-[[package]]
-name = "demo-c"
-version = "0.1.0"
-dependencies = [
- "dbgvis",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -80,6 +56,26 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown",
+]
+
+[[package]]
+name = "linkme"
+version = "0.3.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3045e122bd98aef8ec3ad58ce84f0791f64e70163d1a02710af4aa11a4d54cc5"
+dependencies = [
+ "linkme-impl",
+]
+
+[[package]]
+name = "linkme-impl"
+version = "0.3.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77060ebe535362c3da75682cd17b0431017b6e7c5661e714fc69a7ad017d1301"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -199,6 +195,9 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 [[package]]
 name = "visualizer-runtime"
 version = "0.2.0"
+dependencies = [
+ "linkme",
+]
 
 [[package]]
 name = "winnow"

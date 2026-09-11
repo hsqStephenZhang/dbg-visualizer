@@ -168,4 +168,24 @@ fn errors_limits_nul_and_recovery() {
 fn duplicate_registration_is_rejected() {
     let root = Registration::<u32>::new::<u32>("anchor").debug().finish();
     assert!(std::panic::catch_unwind(|| runtime(vec![root, root])).is_err());
+    let other_marker = Registration::<u32>::new::<i32>("other").display().finish();
+    assert!(std::panic::catch_unwind(|| runtime(vec![root, other_marker])).is_err());
+}
+
+#[test]
+fn an_empty_linked_registry_is_ready_but_has_no_callable_slot() {
+    let runtime = runtime(vec![]);
+    assert!(runtime.entries.get().unwrap().is_empty());
+    let value = 7u32;
+    let response = unsafe {
+        call(
+            runtime,
+            Request {
+                object: &value as *const _ as u64,
+                ..Request::EMPTY
+            },
+        )
+    };
+    assert_eq!(response.status, Status::Invalid as u64);
+    assert_eq!(response.written, 0);
 }

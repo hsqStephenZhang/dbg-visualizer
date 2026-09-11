@@ -12,6 +12,8 @@ mod protocol;
 mod writer;
 
 pub use formatter::{FormatOptions, Formatter, Group, Outcome, Output, format_into};
+#[doc(hidden)]
+pub use linkme as __linkme;
 pub use protocol::*;
 pub use writer::BoundedWriter;
 pub type Result = std::fmt::Result;

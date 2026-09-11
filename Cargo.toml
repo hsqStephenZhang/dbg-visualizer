@@ -4,21 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["crates/visualizer-runtime", "crates/dbgvis", "crates/dbgvis-macros", "tests/fixtures/a", "tests/fixtures/b", "tests/fixtures/c"]
+members = ["crates/visualizer-runtime", "crates/dbgvis", "crates/dbgvis-macros"]
 resolver = "2"
-
-[features]
-default = []
-visualize = ["dep:dbgvis", "demo-a/visualize", "demo-b/visualize", "demo-c/visualize"]
 
 [dependencies]
 bytes = "1.11.0"
 indexmap = "2.12.1"
 hashbrown = { version = "0.17.1", default-features = false }
-dbgvis = { path = "crates/dbgvis", optional = true, features = ["derive"] }
-demo-a = { path = "tests/fixtures/a" }
-demo-b = { path = "tests/fixtures/b" }
-demo-c = { path = "tests/fixtures/c" }
+dbgvis = { path = "crates/dbgvis", features = ["derive"] }
 
 [profile.release]
 debug = 2
@@ -31,7 +24,3 @@ codegen-units = 1
 [profile.abort]
 inherits = "dev"
 panic = "abort"
-
-[[example]]
-name = "faults"
-required-features = ["visualize"]

@@ -6,7 +6,7 @@ import sys
 gdb.execute("set pagination off")
 gdb.execute("set confirm off")
 gdb.execute("set debuginfod enabled off")
-gdb.execute("break dbg_visualizer::checkpoint")
+gdb.execute("break demo::checkpoint")
 gdb.execute("run")
 gdb.execute("up")
 session = sys.modules["dbgvis_gdb"]._session
@@ -31,14 +31,23 @@ gdb.execute("print point", to_string=True)
 assert session.calls == 0, "manual view must not call target"
 session.discover()
 assert all(e["type"] is not None for e in session.entries)
-assert not any(e["name"].startswith(("demo_a::", "demo_b::", "demo_c::")) for e in session.entries)
+names = {e["name"] for e in session.entries}
+assert 'demo::Counter' in names
+assert not any(name.startswith('demo::State<') for name in names), "nested generic type need not be a registered root"
 
 assert formatted("map") == '{"points": [Some(Point { x: 1, y: 2 }), None]}'
 assert formatted("custom") == '{(): 42}'
+assert formatted("local") == 'Local { value: 17 }'
+assert formatted("counter") == 'Counter { count: 23 }'
+before = session.calls
+try:
+    command("print text")
+    raise AssertionError("an unregistered Debug/Display type must not become an implicit root")
+except gdb.error as error:
+    assert "unregistered" in str(error)
+assert session.calls == before
 app = formatted("app")
-assert 'library_a: Record { value: Item { count: 11 }, policy: PhantomData }' in app
-assert 'library_c: State::Ready { message: "跨 crate" }' in app
-assert 'label: Display-only' in app
+assert 'points: {"app": [Some(Point { x: 5, y: 6 })]}' in app
 assert 'State::Ready { value: 7 }' in app
 assert 'secret' not in app
 assert formatted("bytes") == 'b"hello world"'
@@ -47,7 +56,7 @@ assert formatted("index_borrowed") == '{"临时字符串": 123}'
 assert formatted("index_array") == '{[1, 2]: [(), ()]}'
 assert formatted("external_map") == '{9: [8, 7]}'
 assert formatted("--mode display address") == '127.0.0.1:8080'
-assert formatted("--mode display point") == '(3, 7)'
+assert formatted("point") == 'Point { x: 3, y: 7 }'
 assert formatted("borrowed") == 'Borrowed { label: "临时字符串", value: [1, 2], marker: PhantomData }'
 assert formatted("borrowed_other") == 'Borrowed { label: "临时字符串", value: [3, 4], marker: PhantomData }'
 assert "byte limit" in formatted("--buffer 8 map")
@@ -76,8 +85,8 @@ command("config execution automatic")
 before = session.calls
 assert 'Point { x: 3, y: 7 }' in gdb.execute("print point", to_string=True)
 assert session.calls == before + 1
-command('config --type dbg_visualizer::Point summary.mode display')
-assert '(3, 7)' in gdb.execute("print point", to_string=True)
+command('config --type demo::Point summary.alternate true')
+assert 'Point {\n  x: 3,\n  y: 7\n}' in gdb.execute("print point", to_string=True)
 command("reset")
 gdb.execute("set variable point.x = 99")
 assert formatted("point") == 'Point { x: 99, y: 7 }'

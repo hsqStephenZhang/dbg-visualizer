@@ -36,21 +36,21 @@ def main():
     parser.add_argument("--lto", action="store_true")
     parser.add_argument("--relocated", action="store_true")
     options = parser.parse_args()
-    run(["cargo", "build", "--offline", "--features", "visualize"])
-    run(debugger(ROOT / "target/debug/dbg-visualizer", "gdb_checks.py"), "GDB_V2_INTEGRATION_OK")
+    run(["cargo", "build", "--offline", "--example", "demo"])
+    run(debugger(ROOT / "target/debug/examples/demo", "gdb_checks.py"), "GDB_V2_INTEGRATION_OK")
     if options.lto:
-        run(["cargo", "build", "--offline", "--features", "visualize", "--profile", "release-lto"])
-        run(debugger(ROOT / "target/release-lto/dbg-visualizer", "gdb_checks.py"), "GDB_V2_INTEGRATION_OK")
+        run(["cargo", "build", "--offline", "--example", "demo", "--profile", "release-lto"])
+        run(debugger(ROOT / "target/release-lto/examples/demo", "gdb_checks.py"), "GDB_V2_INTEGRATION_OK")
     if options.relocated:
         with tempfile.TemporaryDirectory(prefix="dbgvis relocated ") as directory:
             binary = Path(directory) / "demo binary"
-            shutil.copy2(ROOT / "target/debug/dbg-visualizer", binary)
+            shutil.copy2(ROOT / "target/debug/examples/demo", binary)
             run(debugger(binary, "gdb_checks.py"), "GDB_V2_INTEGRATION_OK")
     if options.faults:
-        run(["cargo", "build", "--offline", "--features", "visualize", "--example", "faults"])
+        run(["cargo", "build", "--offline", "--example", "faults"])
         for kind in ("panic", "error", "hang", "exit"):
             run(debugger(ROOT / "target/debug/examples/faults", "fault_gdb.py", [kind]), "GDB_V2_FAULT_OK")
-        run(["cargo", "build", "--offline", "--features", "visualize", "--example", "faults", "--profile", "abort"])
+        run(["cargo", "build", "--offline", "--example", "faults", "--profile", "abort"])
         run(debugger(ROOT / "target/abort/examples/faults", "fault_gdb.py", ["panic"]), "GDB_V2_FAULT_OK")
     print("GDB_V2_SUITE_OK")
 

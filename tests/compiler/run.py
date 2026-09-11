@@ -13,13 +13,15 @@ struct Label;
 impl fmt::Display for Label { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str("label") } }
 #[derive(dv::Visualize)]
 struct Wrapper<'a, T, P, const N: usize> { value: T, text: &'a str, policy: PhantomData<P> }
-#[dv::visualizers] mod first {
+mod first {
+    #[dv::register]
     type Root<'a> = super::Wrapper<'a, std::collections::HashMap<u8, Vec<super::Label>>, super::Policy, 9>;
-    #[cfg(any())] type Disabled = Missing;
+    #[cfg(any())] #[dv::register] type Disabled = Missing;
 }
-#[dv::visualizers] mod second { #[dbgvis(display)] type Root = u32; }
+mod second { dv::register_type!(u32; display); }
 fn main() {
-    dv::enable!(first, second);
+    dv::enable!();
+    assert_eq!(dv::VIS_TYPES.len(), 2);
     let text = String::from("borrowed");
     let value = Wrapper::<_, Policy, 9> { value: HashMap::from([(1, vec![Label])]), text: &text, policy: PhantomData };
     let mut buffer = [0; 256];
@@ -30,8 +32,8 @@ fn main() {
     "missing_field": (False, "no Visualize, Debug or Display", r'''
 struct Missing;
 #[derive(dv::Visualize)] struct Root<T> { value: T }
-#[dv::visualizers] mod registry { type Root = super::Root<super::Missing>; }
-#[dv::main(registry = registry)] fn main() {}
+dv::register_type!(Root<Missing>);
+#[dv::main] fn main() {}
 '''),
     "missing_empty_vec": (False, "no Visualize, Debug or Display", r'''
 struct Missing;
@@ -43,8 +45,8 @@ fn main() {
 '''),
     "missing_nested_map": (False, "no Visualize, Debug or Display", r'''
 struct Missing;
-#[dv::visualizers] mod registry { type Root = std::collections::HashMap<u8, Vec<super::Missing>>; }
-#[dv::main(registry = registry)] fn main() {}
+dv::register_type!(std::collections::HashMap<u8, Vec<Missing>>);
+#[dv::main] fn main() {}
 '''),
     "explicit_display": (False, "Display", r'''
 #[derive(Debug)] struct DebugOnly;
@@ -58,11 +60,11 @@ fn main() {}
 '''),
     "missing_root": (False, "Display", r'''
 #[derive(Debug)] struct DebugOnly;
-#[dv::visualizers] mod registry { #[dbgvis(display)] type Root = super::DebugOnly; }
-#[dv::main(registry = registry)] fn main() {}
+dv::register_type!(DebugOnly; display);
+#[dv::main] fn main() {}
 '''),
     "generic_family": (False, "concrete type/const", r'''
-#[dv::visualizers] mod registry { type Root<T> = Vec<T>; }
+#[dv::register] type Root<T> = Vec<T>;
 fn main() {}
 '''),
     "conflicting_field": (False, "skip cannot", r'''
@@ -70,7 +72,7 @@ fn main() {}
 fn main() {}
 '''),
     "invalid_default": (False, "default mode must be registered", r'''
-#[dv::visualizers] mod registry { #[dbgvis(debug, default = "display")] type Root = u8; }
+dv::register_type!(u8; debug, default = "display");
 fn main() {}
 '''),
     "borrowed_not_static": (False, "lifetime", r'''
@@ -78,10 +80,170 @@ struct Borrowed<'a>(&'a str);
 impl std::fmt::Display for Borrowed<'static> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.0) }
 }
-#[dv::visualizers] mod registry { #[dbgvis(display)] type Root<'a> = super::Borrowed<'a>; }
-#[dv::main(registry = registry)] fn main() {}
+#[dv::register(display)] type Root<'a> = Borrowed<'a>;
+#[dv::main] fn main() {}
+'''),
+    "automatic_and_optout": (True, "", r'''
+#[derive(dv::Visualize)] struct Automatic { x: u32 }
+#[derive(dv::Visualize)] #[dbgvis(no_register)] struct Nested { x: u32 }
+#[derive(dv::Visualize)] struct Generic<T>(T);
+#[dv::register] #[derive(Debug)] struct DebugOnly(u32);
+#[derive(Debug)] struct PlainDebug;
+#[dv::register(display)] struct DisplayOnly;
+impl std::fmt::Display for DisplayOnly {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("display") }
+}
+dv::register_type!(Generic<Nested>);
+#[dv::main] fn main() {
+    assert_eq!(dv::VIS_TYPES.len(), 4);
+    let mut buf = [0; 128];
+    assert_eq!(dv::format_into(&Generic(Nested { x: 3 }), &mut buf, Default::default()).text,
+        "Generic(Nested { x: 3 })");
+}
+'''),
+    "empty_registry": (True, "", r'''
+#[derive(dv::Visualize)] struct Generic<T>(T);
+#[derive(dv::Visualize)] struct Borrowed<'a>(&'a str);
+#[derive(dv::Visualize)] #[dbgvis(no_register)] struct Nested { x: u32 }
+#[dv::main] fn main() { assert!(dv::VIS_TYPES.is_empty()); }
+'''),
+    "duplicate_types_rejected": (True, "", r'''
+mod a { dv::register_type!(u32); }
+mod b { #[dv::register(display)] type Root = u32; }
+fn main() { assert!(std::panic::catch_unwind(|| { dv::enable!(); }).is_err()); }
+'''),
+    "scoped_types": (True, "", r'''
+mod a { #[derive(dv::Visualize)] pub struct Same(u32); }
+mod b { #[derive(dv::Visualize)] pub struct Same(u32); }
+#[dv::main] fn main() {
+    #[derive(dv::Visualize)] struct Local(u32);
+    assert_eq!(dv::VIS_TYPES.len(), 3);
+}
+'''),
+    "auto_missing_concrete": (False, "no Visualize, Debug or Display", r'''
+struct Missing;
+#[derive(dv::Visualize)] struct Root { value: Missing }
+#[dv::main] fn main() {}
+'''),
+    "generic_attribute_rejected": (False, "concrete type/const", r'''
+#[dv::register] #[derive(Debug)] struct Root<T>(T);
+fn main() {}
+'''),
+    "duplicate_default": (False, "duplicate default", r'''
+dv::register_type!(u32; auto, default = "auto", default = "auto");
+fn main() {}
 '''),
 }
+
+
+def check_features(project):
+    """Keep opt-out coverage in a consumer project; the demo is always enabled."""
+    sources = {
+        "a": r'''
+#[cfg_attr(feature = "visualize", derive(dbgvis::Visualize))]
+pub struct Record<T, Policy> { value: T, policy: std::marker::PhantomData<Policy> }
+impl<T, P> Record<T, P> {
+    pub fn new(value: T) -> Self { Self { value, policy: std::marker::PhantomData } }
+}
+''',
+        "b": r'''
+#[cfg_attr(feature = "visualize", derive(dbgvis::Visualize))]
+pub struct Item { count: u32 }
+impl Item { pub fn new(count: u32) -> Self { Self { count } } }
+#[cfg_attr(feature = "visualize", derive(dbgvis::Visualize))]
+pub struct UnusedRegistered { pub value: u32 }
+''',
+        "c": r'''
+#[cfg_attr(feature = "visualize", derive(dbgvis::Visualize))]
+pub enum State { Pending }
+pub struct Label;
+impl std::fmt::Display for Label {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Display-only")
+    }
+}
+''',
+    }
+    for name, source in sources.items():
+        crate = project / name
+        (crate / "src").mkdir(parents=True)
+        (crate / "src/lib.rs").write_text(source)
+        (crate / "Cargo.toml").write_text(f'''[package]
+name = "demo-{name}"
+version = "0.0.0"
+edition = "2024"
+[features]
+default = []
+visualize = ["dep:dbgvis"]
+[dependencies]
+dbgvis = {{ path = "{ROOT / 'crates/dbgvis'}", optional = true, features = ["derive"] }}
+''')
+    (project / "Cargo.toml").write_text(f'''[package]
+name = "dbgvis-feature-consumer"
+version = "0.0.0"
+edition = "2024"
+[workspace]
+members = ["a", "b", "c"]
+[profile.release]
+lto = true
+codegen-units = 1
+debug = 2
+[features]
+default = []
+visualize = ["dep:dbgvis", "demo-a/visualize", "demo-b/visualize", "demo-c/visualize"]
+[dependencies]
+dbgvis = {{ path = "{ROOT / 'crates/dbgvis'}", optional = true, features = ["derive"] }}
+demo-a = {{ path = "{project / 'a'}" }}
+demo-b = {{ path = "{project / 'b'}" }}
+demo-c = {{ path = "{project / 'c'}" }}
+''')
+    (project / "src/main.rs").write_text(r'''
+struct NoTraits;
+#[cfg_attr(feature = "visualize", derive(dbgvis::Visualize))]
+struct App {
+    a: demo_a::Record<demo_b::Item, NoTraits>,
+    c: demo_c::State,
+    label: demo_c::Label,
+    #[cfg_attr(feature = "visualize", dbgvis(skip))]
+    skipped: NoTraits,
+}
+fn main() {
+    #[cfg(feature = "visualize")]
+    dbgvis::enable!();
+    let app = App { a: demo_a::Record::new(demo_b::Item::new(8)),
+        c: demo_c::State::Pending, label: demo_c::Label, skipped: NoTraits };
+    #[cfg(feature = "visualize")]
+    {
+        let mut buffer = [0; 512];
+        let text = dbgvis::format_into(&app, &mut buffer, Default::default()).text;
+        assert!(text.contains("count: 8") && text.contains("State::Pending"));
+        assert!(!text.contains("skipped"));
+        assert!(text.contains("label: Display-only"));
+        assert_eq!(dbgvis::VIS_TYPES.len(), 4); // App, Item, UnusedRegistered, State
+    }
+    std::hint::black_box((&app.a, &app.c, &app.label, &app.skipped));
+}
+''')
+    for enabled, release in ((False, False), (True, False), (True, True)):
+        target = ROOT / "target/feature-contracts" / ("on" if enabled else "off")
+        feature = ["--features", "visualize"] if enabled else ["--no-default-features"]
+        profile = ["--release"] if release else []
+        toolchain = "+nightly" if enabled else "+stable"
+        subprocess.run(["cargo", toolchain, "build", "--offline", *feature, *profile, "--target-dir", target],
+                       cwd=project, check=True, timeout=120)
+        binary = target / ("release" if release else "debug") / "dbgvis-feature-consumer"
+        subprocess.run([binary], check=True, timeout=10)
+        tree = subprocess.check_output(["cargo", toolchain, "tree", "--offline", *feature], cwd=project, text=True)
+        symbols = subprocess.check_output(["nm", binary], text=True)
+        if enabled:
+            assert "linkme" in tree and "DBG_VIS_MODULE_V2" in symbols
+            assert "__DBG_ANCHOR_UnusedRegistered" in symbols
+            assert "__DBG_ANCHOR_Item" in symbols and "__DBG_ANCHOR_State" in symbols
+        else:
+            assert all(name not in tree for name in ("dbgvis v", "visualizer-runtime", "dbgvis-macros", "linkme")), tree
+            assert all(name not in symbols for name in ("DBG_VIS_MODULE", "dbgvis_dispatch", "__DBG_RUNTIME", "visualizer_runtime", "linkme", "__DBG_ANCHOR", "__DBG_REGISTRATION"))
+    print("TEMPORARY_CROSS_CRATE_DEBUG_LTO_OK")
+    print("FEATURE_DISABLED_OK")
 
 
 def main():
@@ -110,14 +272,7 @@ dv = {{ package = "dbgvis", path = "{ROOT / 'crates/dbgvis'}", features = ["deri
                     binary = Path(environment["CARGO_TARGET_DIR"]) / ("release" if profile else "debug") / "dbgvis-compile-consumer"
                     subprocess.run([binary], check=True, timeout=10)
             print(name + ": OK", flush=True)
-    disabled = ROOT / "target/disabled"
-    subprocess.run(["cargo", "+stable", "build", "--offline", "-p", "dbg-visualizer", "--no-default-features",
-                    "--target-dir", disabled], cwd=ROOT, check=True, timeout=120)
-    tree = subprocess.check_output(["cargo", "+stable", "tree", "--offline", "-p", "dbg-visualizer", "--no-default-features"], cwd=ROOT, text=True)
-    symbols = subprocess.check_output(["nm", disabled / "debug/dbg-visualizer"], text=True)
-    assert all(name not in tree for name in ("dbgvis", "visualizer-runtime", "dbgvis-macros")), tree
-    assert all(name not in symbols for name in ("DBG_VIS_MODULE", "dbgvis_dispatch", "__DBG_RUNTIME", "visualizer_runtime"))
-    print("FEATURE_DISABLED_OK")
+        check_features(project)
     print("COMPILER_CONTRACTS_OK")
 
 

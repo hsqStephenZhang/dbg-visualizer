@@ -140,7 +140,7 @@ class Session:
             raise RuntimeError("ABI_MISMATCH: requires dbgvis v2, 64-bit little-endian")
         if h[8] != 1:
             raise RuntimeError("registry not enabled yet; stop after dbgvis::enable!")
-        if not 0 < h[10] <= 4096 or not 0 < h[14] <= 16 * 1024 * 1024:
+        if not 0 <= h[10] <= 4096 or not 0 < h[14] <= 16 * 1024 * 1024:
             raise RuntimeError("invalid registry bounds")
         entries = []
         for slot in range(h[10]):
@@ -305,6 +305,8 @@ class Session:
             return json.dumps(dict(calls=self.calls, elapsed_ms=self.elapsed_ms, poisoned=self.poisoned, last_error=self.last_error), ensure_ascii=False)
         if command == "types":
             self.discover()
+            if not self.entries:
+                return "no registered roots; use derive(Visualize), #[dbgvis::register] or dbgvis::register_type!"
             return "\n".join(f"{e['slot']}: {e['name']} capabilities={e['capabilities']} anchor={'ok' if e['type'] is not None else 'unavailable'}" for e in self.entries)
         if command == "config":
             target = self.config

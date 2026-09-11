@@ -87,6 +87,19 @@ pub struct Root {
     name: &'static str,
     entry: Entry,
 }
+
+/// Linker-collected metadata factories. Factories never format business values.
+#[linkme::distributed_slice]
+pub static VIS_TYPES: [fn() -> Root];
+
+#[doc(hidden)]
+pub fn collected_roots() -> Vec<Root> {
+    assert!(VIS_TYPES.len() <= 4096, "dbgvis: invalid root count");
+    let mut roots: Vec<_> = VIS_TYPES.iter().map(|describe| describe()).collect();
+    // Link order is unspecified; never use it to choose defaults or override a type.
+    roots.sort_by_key(|root| root.name);
+    roots
+}
 pub struct Registration<T> {
     root: Root,
     invariant: PhantomData<fn(T) -> T>,
@@ -248,10 +261,7 @@ impl Runtime {
     pub fn enable(&'static self, module: &'static Module, roots: impl FnOnce() -> Vec<Root>) {
         let entries = self.entries.get_or_init(|| {
             let roots = roots();
-            assert!(
-                !roots.is_empty() && roots.len() <= 4096,
-                "dbgvis: invalid root count"
-            );
+            assert!(roots.len() <= 4096, "dbgvis: invalid root count");
             let mut keys = std::collections::HashSet::new();
             let mut names = std::collections::HashSet::new();
             for root in &roots {
@@ -433,18 +443,17 @@ impl Module {
 
 #[macro_export]
 macro_rules! enable {
-    ($($registry:path),+ $(,)?) => {{
+    () => {{
         static __DBG_RUNTIME: $crate::Runtime = $crate::Runtime::new();
         #[unsafe(no_mangle)]
-        static DBG_VIS_MODULE_V2: $crate::Module = $crate::Module::new(&__DBG_RUNTIME, dbgvis_dispatch_v2);
+        static DBG_VIS_MODULE_V2: $crate::Module =
+            $crate::Module::new(&__DBG_RUNTIME, dbgvis_dispatch_v2);
         /// # Safety
         /// Requires a valid exact registered object and serialized stopped-process access.
         #[unsafe(no_mangle)]
-        unsafe extern "C" fn dbgvis_dispatch_v2(request: usize) -> u64 { unsafe { __DBG_RUNTIME.dispatch(request) } }
-        __DBG_RUNTIME.enable(&DBG_VIS_MODULE_V2, || {
-            let mut roots = ::std::vec::Vec::new();
-            $({ use $registry as registry; roots.extend(registry::__dbgvis_roots()); })+
-            roots
-        });
+        unsafe extern "C" fn dbgvis_dispatch_v2(request: usize) -> u64 {
+            unsafe { __DBG_RUNTIME.dispatch(request) }
+        }
+        __DBG_RUNTIME.enable(&DBG_VIS_MODULE_V2, $crate::collected_roots);
     }};
 }

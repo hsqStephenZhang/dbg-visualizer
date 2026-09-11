@@ -2,7 +2,7 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as Tokens;
 use quote::{format_ident, quote};
 use syn::{
-    Attribute, Data, DeriveInput, Fields, Item, ItemFn, ItemMod, LitStr, Type, parse_macro_input,
+    Attribute, Data, DeriveInput, Fields, Item, ItemFn, LitStr, Type, parse_macro_input,
     spanned::Spanned,
 };
 
@@ -56,6 +56,7 @@ struct Options {
     rename: Option<String>,
     via: Option<String>,
     transparent: bool,
+    no_register: bool,
     bounds: Vec<syn::WherePredicate>,
 }
 fn options(attrs: &[Attribute]) -> syn::Result<Options> {
@@ -90,6 +91,11 @@ fn options(attrs: &[Attribute]) -> syn::Result<Options> {
                 let text = meta.value()?.parse::<LitStr>()?.value();
                 let clause: syn::WhereClause = syn::parse_str(&format!("where {text}"))?;
                 out.bounds.extend(clause.predicates);
+            } else if meta.path.is_ident("no_register") {
+                if out.no_register {
+                    return Err(meta.error("duplicate no_register"));
+                }
+                out.no_register = true;
             } else {
                 return Err(meta.error("unsupported dbgvis option"));
             }
@@ -116,10 +122,10 @@ fn body(
     let mut active = Vec::new();
     for (index, field) in fields.iter().enumerate() {
         let config = options(&field.attrs)?;
-        if config.transparent || !config.bounds.is_empty() {
+        if config.transparent || !config.bounds.is_empty() || config.no_register {
             return Err(syn::Error::new(
                 field.span(),
-                "transparent/bound are type-level options",
+                "transparent/bound/no_register are type-level options",
             ));
         }
         if config.skip {
@@ -233,6 +239,7 @@ fn derive_impl(mut input: DeriveInput) -> syn::Result<Tokens> {
                 if variant_config.skip
                     || variant_config.via.is_some()
                     || variant_config.transparent
+                    || variant_config.no_register
                     || !variant_config.bounds.is_empty()
                 {
                     return Err(syn::Error::new(
@@ -288,185 +295,226 @@ fn derive_impl(mut input: DeriveInput) -> syn::Result<Tokens> {
         }
     };
     input.generics.make_where_clause().predicates.extend(bounds);
+    let registration = if input.generics.params.is_empty() && !config.no_register {
+        emit_registration(
+            name,
+            &syn::parse_quote!(#name),
+            &input.generics,
+            &input.attrs,
+            &ModeOptions::default(),
+            &path,
+        )?
+    } else {
+        Tokens::new()
+    };
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
         impl #impl_generics #path::Visualize for #name #ty_generics #where_clause {
             fn visualize(&self, __dbgvis_out: &mut #path::Formatter<'_>) -> #path::Result { #generated }
         }
+        #registration
     })
 }
 
-#[proc_macro_attribute]
-pub fn visualizers(args: TokenStream, input: TokenStream) -> TokenStream {
-    if !args.is_empty() {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "visualizers takes no arguments",
-        )
-        .into_compile_error()
-        .into();
-    }
-    let input = parse_macro_input!(input as ItemMod);
-    registry_impl(input)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
+#[derive(Default)]
+struct ModeOptions {
+    modes: Vec<String>,
+    default: Option<String>,
 }
-fn registry_impl(mut module: ItemMod) -> syn::Result<Tokens> {
-    let path = facade();
-    let (_, items) = module.content.as_mut().ok_or_else(|| {
-        syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "visualizers requires an inline module",
-        )
-    })?;
-    let mut extras = Vec::new();
-    let mut roots = Vec::new();
-    for item in items.iter_mut() {
-        let Item::Type(alias) = item else {
-            continue;
-        };
-        let mut modes = Vec::<String>::new();
-        let mut default_mode = None;
-        for attr in alias.attrs.iter().filter(|a| a.path().is_ident("dbgvis")) {
-            attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("default") {
-                    if default_mode.is_some() {
-                        return Err(meta.error("duplicate default"));
-                    }
-                    default_mode = Some(meta.value()?.parse::<LitStr>()?.value());
-                } else if let Some(ident) = meta.path.get_ident() {
-                    let mode = ident.to_string();
-                    if !["auto", "visualize", "debug", "display"].contains(&mode.as_str()) {
-                        return Err(meta.error("expected auto, visualize, debug or display"));
-                    }
-                    if modes.contains(&mode) {
-                        return Err(meta.error("duplicate mode"));
-                    }
-                    modes.push(mode);
-                } else {
-                    return Err(meta.error("invalid registration option"));
+impl syn::parse::Parse for ModeOptions {
+    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+        let mut out = Self::default();
+        while !input.is_empty() {
+            let ident: syn::Ident = input.parse()?;
+            let word = ident.to_string();
+            if word == "default" {
+                if out.default.is_some() {
+                    return Err(syn::Error::new(ident.span(), "duplicate default"));
                 }
-                Ok(())
-            })?;
-        }
-        alias.attrs.retain(|a| !a.path().is_ident("dbgvis"));
-        if modes.is_empty() {
-            modes.push("auto".into());
-        }
-        modes.sort_by_key(|m| {
-            ["auto", "visualize", "debug", "display"]
-                .iter()
-                .position(|x| x == m)
-                .unwrap()
-        });
-        if alias.generics.type_params().next().is_some()
-            || alias.generics.const_params().next().is_some()
-        {
-            return Err(syn::Error::new(
-                alias.span(),
-                "register concrete type/const arguments, not a generic type family",
-            ));
-        }
-        let ident = &alias.ident;
-        let cfg = alias
-            .attrs
-            .iter()
-            .filter(|a| a.path().is_ident("cfg"))
-            .collect::<Vec<_>>();
-        let anchor_ident = format_ident!("__DBG_ANCHOR_{ident}");
-        let anchor_type = format_ident!("__DbgAnchor{ident}");
-        let marker = format_ident!("__DbgMarker{ident}");
-        let factory = format_ident!("__dbgvis_entry_{ident}");
-        let lifetime_args = alias
-            .generics
-            .lifetimes()
-            .map(|_| quote!('static))
-            .collect::<Vec<_>>();
-        let ty: Type = if lifetime_args.is_empty() {
-            syn::parse_quote!(#ident)
-        } else {
-            syn::parse_quote!(#ident<#(#lifetime_args),*>)
-        };
-        let lifetimes = alias
-            .generics
-            .lifetimes()
-            .map(|p| &p.lifetime)
-            .collect::<Vec<_>>();
-        let callback_ty: Type = if lifetimes.is_empty() {
-            syn::parse_quote!(#ident)
-        } else {
-            syn::parse_quote!(#ident<#(#lifetimes),*>)
-        };
-        let generics = &alias.generics;
-        let where_clause = &generics.where_clause;
-        extras.push(quote! {
-            #(#cfg)* #[doc(hidden)] struct #marker;
-            #(#cfg)* #[doc(hidden)] #[repr(C)] pub struct #anchor_type { pub typed: *const #ty }
-            #(#cfg)* unsafe impl Sync for #anchor_type {}
-            #(#cfg)* #[doc(hidden)] pub static #anchor_ident: #anchor_type = #anchor_type { typed: ::std::ptr::null() };
-        });
-        // Typed callback binds the target independently of its wire registration marker.
-        let calls = modes
-            .iter()
-            .map(|m| format_ident!("{m}"))
-            .collect::<Vec<_>>();
-        let mut entry = quote!(#path::Registration::<#callback_ty>::new::<#marker>(concat!(module_path!(), "::", stringify!(#anchor_ident))) #(.#calls())*);
-        if let Some(mode) = default_mode {
-            if !modes.contains(&mode) {
+                input.parse::<syn::Token![=]>()?;
+                out.default = Some(input.parse::<LitStr>()?.value());
+            } else if ["auto", "visualize", "debug", "display"].contains(&word.as_str()) {
+                if out.modes.contains(&word) {
+                    return Err(syn::Error::new(ident.span(), "duplicate mode"));
+                }
+                out.modes.push(word);
+            } else {
                 return Err(syn::Error::new(
-                    alias.span(),
-                    "default mode must be registered",
+                    ident.span(),
+                    "expected auto, visualize, debug, display or default",
                 ));
             }
-            let constant = format_ident!("{}", mode.to_uppercase());
-            entry = quote!(#entry.default_mode(#path::#constant));
-        }
-        extras.push(quote! {
-            #(#cfg)*
-            #[allow(non_snake_case)]
-            fn #factory #generics () -> #path::Root #where_clause {
-                ::std::hint::black_box(&#anchor_ident);
-                #entry.finish()
+            if input.is_empty() {
+                break;
             }
-        });
-        roots.push(quote!(#(#cfg)* { __dbgvis_roots.push(#factory()); }));
+            input.parse::<syn::Token![,]>()?;
+        }
+        Ok(out)
     }
-    if roots.is_empty() {
+}
+
+fn emit_registration(
+    ident: &syn::Ident,
+    ty: &Type,
+    generics: &syn::Generics,
+    attrs: &[Attribute],
+    options: &ModeOptions,
+    path: &Tokens,
+) -> syn::Result<Tokens> {
+    if generics.type_params().next().is_some() || generics.const_params().next().is_some() {
         return Err(syn::Error::new(
-            module.span(),
-            "register at least one concrete root type",
+            generics.span(),
+            "register concrete type/const arguments, not a generic type family",
         ));
     }
-    items.push(syn::parse_quote! {
-        #[doc(hidden)] #[allow(clippy::vec_init_then_push)]
-        pub fn __dbgvis_roots() -> ::std::vec::Vec<#path::Root> {
-            let mut __dbgvis_roots = ::std::vec::Vec::new();
-            #(#roots)*
-            __dbgvis_roots
-        }
+    let mut modes = options.modes.clone();
+    if modes.is_empty() {
+        modes.push("auto".into());
+    }
+    modes.sort_by_key(|m| {
+        ["auto", "visualize", "debug", "display"]
+            .iter()
+            .position(|x| x == m)
+            .unwrap()
     });
-    let (brace, items) = module.content.take().unwrap();
-    let attrs = &module.attrs;
-    let vis = &module.vis;
-    let name = &module.ident;
-    let _ = brace;
-    Ok(quote!(#(#attrs)* #vis mod #name { #(#items)* #(#extras)* }))
+    let default = options.default.as_ref().unwrap_or(&modes[0]);
+    if !modes.contains(default) {
+        return Err(syn::Error::new(
+            ident.span(),
+            "default mode must be registered",
+        ));
+    }
+    let default = format_ident!("{}", default.to_uppercase());
+    let calls = modes
+        .iter()
+        .map(|mode| format_ident!("{mode}"))
+        .collect::<Vec<_>>();
+    let cfg = attrs
+        .iter()
+        .filter(|a| a.path().is_ident("cfg"))
+        .collect::<Vec<_>>();
+    let anchor = format_ident!("__DBG_ANCHOR_{ident}");
+    let anchor_type = format_ident!("__DBG_ANCHOR_{ident}Type");
+    let marker = format_ident!("__DbgMarker{ident}");
+    let factory = format_ident!("__dbgvis_entry_{ident}");
+    let element = format_ident!("__DBG_REGISTRATION_{ident}");
+    // Substitute only declared lifetime parameters in the DWARF-only anchor.
+    // The formatter factory below retains the original generic lifetimes.
+    struct StaticLifetimes(Vec<syn::Lifetime>);
+    impl syn::visit_mut::VisitMut for StaticLifetimes {
+        fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+            if self.0.contains(lifetime) {
+                *lifetime = syn::parse_quote!('static);
+            }
+        }
+    }
+    let mut anchor_ty = ty.clone();
+    syn::visit_mut::VisitMut::visit_type_mut(
+        &mut StaticLifetimes(generics.lifetimes().map(|p| p.lifetime.clone()).collect()),
+        &mut anchor_ty,
+    );
+    let where_clause = &generics.where_clause;
+    Ok(quote! {
+        #(#cfg)* #[doc(hidden)] struct #marker;
+        #(#cfg)* #[doc(hidden)] #[repr(C)] #[allow(non_camel_case_types)]
+        struct #anchor_type { typed: *const #anchor_ty }
+        #(#cfg)* unsafe impl Sync for #anchor_type {}
+        #(#cfg)* #[doc(hidden)] #[allow(non_upper_case_globals)]
+        static #anchor: #anchor_type = #anchor_type { typed: ::std::ptr::null() };
+        #(#cfg)* #[allow(non_snake_case)]
+        fn #factory #generics () -> #path::Root #where_clause {
+            ::std::hint::black_box(&#anchor);
+            // type_name includes function-local scopes, unlike module_path!().
+            let anchor = ::std::any::type_name::<#anchor_type>().strip_suffix("Type").unwrap();
+            #path::Registration::<#ty>::new::<#marker>(anchor)
+                #(.#calls())*.default_mode(#path::#default).finish()
+        }
+        #(#cfg)*
+        #[#path::__linkme::distributed_slice(#path::VIS_TYPES)]
+        #[linkme(crate = #path::__linkme)]
+        #[allow(non_upper_case_globals)]
+        static #element: fn() -> #path::Root = #factory;
+    })
+}
+
+/// Register a struct/enum or a concrete alias without implementing Visualize.
+#[proc_macro_attribute]
+pub fn register(args: TokenStream, input: TokenStream) -> TokenStream {
+    let options = parse_macro_input!(args as ModeOptions);
+    let item = parse_macro_input!(input as Item);
+    let result = (|| {
+        let (ident, generics, attrs) = match &item {
+            Item::Struct(item) => (&item.ident, &item.generics, &item.attrs),
+            Item::Enum(item) => (&item.ident, &item.generics, &item.attrs),
+            Item::Type(item) => (&item.ident, &item.generics, &item.attrs),
+            _ => {
+                return Err(syn::Error::new(
+                    item.span(),
+                    "register expects a struct, enum or concrete type alias",
+                ));
+            }
+        };
+        let (_, arguments, _) = generics.split_for_impl();
+        let ty = syn::parse_quote!(#ident #arguments);
+        let registration = emit_registration(ident, &ty, generics, attrs, &options, &facade())?;
+        Ok(quote!(#item #registration))
+    })();
+    result.unwrap_or_else(syn::Error::into_compile_error).into()
+}
+
+/// Register a concrete third-party or generic root in item position.
+#[proc_macro]
+pub fn register_type(input: TokenStream) -> TokenStream {
+    struct Input {
+        ty: Type,
+        options: ModeOptions,
+    }
+    impl syn::parse::Parse for Input {
+        fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+            let ty = input.parse()?;
+            let options = if input.is_empty() {
+                ModeOptions::default()
+            } else {
+                input.parse::<syn::Token![;]>()?;
+                input.parse()?
+            };
+            Ok(Self { ty, options })
+        }
+    }
+    let Input { ty, options } = parse_macro_input!(input as Input);
+    // Deterministic, scope-local name; collisions are compile errors, never wrong dispatch.
+    let spelling = quote!(#ty).to_string();
+    let hash = spelling.bytes().fold(0xcbf29ce484222325u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100000001b3)
+    });
+    let ident = format_ident!("Type_{hash:016x}");
+    emit_registration(
+        &ident,
+        &ty,
+        &syn::Generics::default(),
+        &[],
+        &options,
+        &facade(),
+    )
+    .unwrap_or_else(syn::Error::into_compile_error)
+    .into()
 }
 
 #[proc_macro_attribute]
 pub fn main(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(args as syn::MetaNameValue);
-    let mut function = parse_macro_input!(input as ItemFn);
-    if !args.path.is_ident("registry") {
-        return syn::Error::new(args.span(), "expected registry = module_path")
-            .into_compile_error()
-            .into();
+    if !args.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "main takes no arguments; registrations are collected by linkme",
+        )
+        .into_compile_error()
+        .into();
     }
-    let registry = args.value;
+    let mut function = parse_macro_input!(input as ItemFn);
     let path = facade();
     function
         .block
         .stmts
-        .insert(0, syn::parse_quote!(#path::enable!(#registry);));
+        .insert(0, syn::parse_quote!(#path::enable!();));
     quote!(#function).into()
 }

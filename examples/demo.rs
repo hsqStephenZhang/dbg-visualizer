@@ -1,8 +1,9 @@
+use dbgvis::Visualize;
 use std::collections::HashMap;
-use std::fmt;
 use std::hash::{BuildHasherDefault, DefaultHasher};
 use std::marker::PhantomData;
 
+#[derive(Visualize)]
 struct HasherPolicy;
 impl std::hash::BuildHasher for HasherPolicy {
     type Hasher = DefaultHasher;
@@ -11,73 +12,58 @@ impl std::hash::BuildHasher for HasherPolicy {
     }
 }
 
-#[cfg_attr(feature = "visualize", derive(dbgvis::Visualize))]
+#[derive(Visualize)]
 struct Point {
     x: i32,
     y: i32,
 }
-impl fmt::Display for Point {
-    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(out, "({}, {})", self.x, self.y)
-    }
-}
 
-struct NoTraits;
-#[cfg_attr(feature = "visualize", derive(dbgvis::Visualize))]
+#[derive(Visualize)]
+struct Marker;
+
+#[derive(Visualize)]
+struct Counter {
+    count: u32,
+}
+#[derive(Visualize)]
 struct Borrowed<'a, T, Policy, const N: usize> {
     label: &'a str,
     value: T,
     marker: PhantomData<Policy>,
 }
 
-#[cfg_attr(feature = "visualize", derive(dbgvis::Visualize))]
+#[derive(Visualize)]
 enum State<T> {
     Ready { value: T },
     Pending,
 }
 
-#[cfg_attr(feature = "visualize", derive(dbgvis::Visualize))]
+#[derive(Visualize)]
 struct AppState {
-    library_a: demo_a::Record<demo_b::Item, NoTraits>,
-    library_c: demo_c::State,
-    label: demo_c::Label,
     points: HashMap<String, Vec<Option<Point>>>,
     bytes: bytes::Bytes,
     ordered: indexmap::IndexMap<u32, String>,
     address: std::net::SocketAddr,
     state: State<u32>,
-    #[cfg_attr(feature = "visualize", dbgvis(skip))]
-    secret: NoTraits,
+    #[dbgvis(skip)]
+    secret: Marker,
 }
 
-#[cfg(feature = "visualize")]
-#[dbgvis::visualizers]
-mod visualizers {
-    #[dbgvis(visualize)]
-    type App = super::AppState;
-    #[dbgvis(visualize)]
-    type Map = std::collections::HashMap<String, Vec<Option<super::Point>>>;
-    #[dbgvis(visualize)]
-    type CustomMap = std::collections::HashMap<(), u64, super::HasherPolicy>;
-    #[dbgvis(visualize, display)]
-    type Point = super::Point;
-    #[dbgvis(auto, debug)]
-    type Bytes = bytes::Bytes;
-    #[dbgvis(auto)]
-    type IndexMap = indexmap::IndexMap<u32, String>;
-    #[dbgvis(auto)]
+mod third_party_roots {
+    dbgvis::register_type!(std::collections::HashMap<String, Vec<Option<super::Point>>>);
+    dbgvis::register_type!(std::collections::HashMap<(), u64, super::HasherPolicy>);
+    dbgvis::register_type!(bytes::Bytes; auto, debug);
+    dbgvis::register_type!(indexmap::IndexMap<u32, String>);
+    #[dbgvis::register]
     type IndexBorrowed<'a> =
         indexmap::IndexMap<&'a str, u64, std::hash::BuildHasherDefault<std::hash::DefaultHasher>>;
-    #[dbgvis(auto)]
-    type IndexArray = indexmap::IndexMap<[u8; 2], Vec<()>>;
-    type Hashbrown =
-        hashbrown::HashMap<u32, Vec<u8>, std::hash::BuildHasherDefault<std::hash::DefaultHasher>>;
-    #[dbgvis(auto, debug, display)]
-    type Address = std::net::SocketAddr;
-    #[dbgvis(visualize)]
-    type Borrowed<'a> = super::Borrowed<'a, Vec<u8>, super::NoTraits, 17>;
-    #[dbgvis(visualize)]
-    type BorrowedOther<'a> = super::Borrowed<'a, Vec<u8>, super::NoTraits, 19>;
+    dbgvis::register_type!(indexmap::IndexMap<[u8; 2], Vec<()>>);
+    dbgvis::register_type!(hashbrown::HashMap<u32, Vec<u8>, std::hash::BuildHasherDefault<std::hash::DefaultHasher>>);
+    dbgvis::register_type!(std::net::SocketAddr; auto, debug, display);
+    #[dbgvis::register(visualize)]
+    type Borrowed<'a> = super::Borrowed<'a, Vec<u8>, super::Marker, 17>;
+    #[dbgvis::register(visualize)]
+    type BorrowedOther<'a> = super::Borrowed<'a, Vec<u8>, super::Marker, 19>;
 }
 
 #[inline(never)]
@@ -87,8 +73,13 @@ fn checkpoint(stage: u32, app: &AppState) {
 }
 
 fn main() {
-    #[cfg(feature = "visualize")]
-    dbgvis::enable!(visualizers);
+    dbgvis::enable!();
+    #[derive(Visualize)]
+    struct Local {
+        value: u32,
+    }
+    let local = Local { value: 17 };
+    let counter = Counter { count: 23 };
     let text = String::from("临时字符串");
     let point = Point { x: 3, y: 7 };
     let map = HashMap::from([(
@@ -107,28 +98,23 @@ fn main() {
     let mut external_map =
         hashbrown::HashMap::<u32, Vec<u8>, BuildHasherDefault<DefaultHasher>>::default();
     external_map.insert(9, vec![8, 7]);
-    let borrowed = Borrowed::<_, NoTraits, 17> {
+    let borrowed = Borrowed::<_, Marker, 17> {
         label: &text,
         value: vec![1u8, 2],
         marker: PhantomData,
     };
-    let borrowed_other = Borrowed::<_, NoTraits, 19> {
+    let borrowed_other = Borrowed::<_, Marker, 19> {
         label: &text,
         value: vec![3u8, 4],
         marker: PhantomData,
     };
     let mut app = AppState {
-        library_a: demo_a::Record::new(demo_b::Item::new(11)),
-        library_c: demo_c::State::Ready {
-            message: "跨 crate".into(),
-        },
-        label: demo_c::Label::new("Display-only"),
         points: HashMap::from([(String::from("app"), vec![Some(Point { x: 5, y: 6 })])]),
         bytes: bytes.clone(),
         ordered: ordered.clone(),
         address,
         state: State::Ready { value: 7 },
-        secret: NoTraits,
+        secret: Marker,
     };
     checkpoint(0, &app);
     app.state = State::Pending;
@@ -147,18 +133,19 @@ fn main() {
         &index_borrowed,
         &index_array,
         &external_map,
+        &local,
+        &counter,
     ));
-    // These reads keep demo fields useful even when visualization is compiled out.
+    // Keep skipped fields and other demo values live for the debugger.
     std::hint::black_box((
         &app.points,
         &app.bytes,
         &app.address,
         &app.secret,
-        &app.library_a,
-        &app.library_c,
-        &app.label,
         &borrowed.label,
         &borrowed.value,
+        &local.value,
+        &counter.count,
     ));
     if let State::Ready { value } = &app.state {
         std::hint::black_box(value);

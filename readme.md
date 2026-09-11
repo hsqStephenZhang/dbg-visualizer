@@ -2,25 +2,27 @@
 
 通过 `#[derive(dbgvis::Visualize)]` 在 Rust 内递归格式化逻辑值；普通字段优先 Visualize，再回退 Debug、Display。HashMap/Vec 等使用公共迭代接口，不解析内部存储，不需要用户编写分页。
 
-当前为 **nightly specialization + GDB v2**，不保留 v1/LLDB 兼容层。默认关闭项目 `visualize` feature；启用后仍默认 `native/manual`，加载脚本不自动调用目标函数。
+非泛型 derive 同时自动登记根入口，由 linkme 跨 crate 收集；main 只需 `dbgvis::enable!()`，不再需要集中式注册模块。只复用 Debug 的类型用 `#[dbgvis::register]`；第三方或泛型具体实例用 `dbgvis::register_type!(T)`。类型级 `#[dbgvis(no_register)]` 可关闭自动登记。
+
+当前为 **nightly specialization + GDB v2**，不保留 v1/LLDB 兼容层。[examples/demo.rs](examples/demo.rs) 的自有类型统一直接 derive Visualize，无 feature gate；运行时仍默认 `native/manual`，加载脚本不自动调用目标函数。生产项目的可选 feature 接入方式见使用指南。
 
 ## 快速开始
 
 ```sh
-cargo build --features visualize
-rust-gdb -iex "add-auto-load-safe-path /absolute/path/dbg-visualizer/target/debug/dbg-visualizer" target/debug/dbg-visualizer
+cargo build --example demo
+rust-gdb -iex "add-auto-load-safe-path /absolute/path/dbg-visualizer/target/debug/examples/demo" target/debug/examples/demo
 ```
 
 将 safe-path 替换为实际二进制绝对路径，不使用 `*`。GDB 脚本由 runtime 自带并嵌入产物，消费项目不需要自己的 build.rs 或 Python 副本。
 
 ```text
-break dbg_visualizer::checkpoint
+break demo::checkpoint
 run
 up
 dbgvis print app
 dbgvis print map
 dbgvis print external_map
-dbgvis print --mode display point
+dbgvis print --mode display address
 dbgvis print --buffer 8 map
 dbgvis config summary.mode auto
 dbgvis config execution automatic
@@ -33,7 +35,7 @@ print point
 {"points": [Some(Point { x: 1, y: 2 }), None]}
 ```
 
-AppState 演示 a/b/c 三个库的组合、非 Debug 类型、第三方 Debug/Display 字段、skip 和嵌套容器。另有三个 IndexMap 实例、hashbrown::HashMap、Bytes、SocketAddr、借用/const 泛型及无 Debug 的 ZST hasher。
+自包含 AppState 演示第三方字段、skip 和嵌套容器。另有三个 IndexMap 实例、hashbrown::HashMap、Bytes、SocketAddr、借用/const 泛型及无 Debug 的 ZST hasher。跨 crate 和 feature 开关验证由测试运行时生成临时项目，workspace 只保留三个核心 crate。
 
 ## 文档
 
