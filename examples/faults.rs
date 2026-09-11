@@ -1,5 +1,4 @@
 //! Deliberately failing formatters, always run in disposable debugger subprocesses.
-include!(concat!(env!("OUT_DIR"), "/autoload.rs"));
 use std::fmt;
 
 struct Fault {
@@ -20,8 +19,10 @@ impl fmt::Display for Fault {
     }
 }
 
-visualizer_runtime::register_visualizers! {
-    Fault => { name: "faults::Fault", display }
+#[dbgvis::visualizers]
+mod visualizers {
+    #[dbgvis(display)]
+    type Fault = super::Fault;
 }
 
 #[inline(never)]
@@ -30,7 +31,7 @@ fn checkpoint() {
 }
 
 fn main() {
-    visualizer_runtime::retain(&DBG_VIS_MODULE_V1);
+    dbgvis::enable!(visualizers);
     let mode = std::env::args().nth(1).unwrap_or_default();
     let fault = Fault {
         kind: match mode.as_str() {

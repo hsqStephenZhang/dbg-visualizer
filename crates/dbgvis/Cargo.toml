@@ -1,0 +1,12 @@
+[package]
+name = "dbgvis"
+version = "0.2.0"
+edition = "2024"
+
+[features]
+default = []
+derive = ["dep:dbgvis-macros"]
+
+[dependencies]
+visualizer-runtime = { path = "../visualizer-runtime", version = "0.2.0" }
+dbgvis-macros = { path = "../dbgvis-macros", version = "0.2.0", optional = true }

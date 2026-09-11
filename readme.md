@@ -1,67 +1,59 @@
 # Rust debugger visualizer
 
-通过一次类型注册，在 GDB、LLDB 和 CodeLLDB 中选择调试器原生视图，或使用 Rust 类型自己的 `Debug` / `Display` 输出。格式化直接写入有界缓冲区；容器支持按需分页展开。
+通过 `#[derive(dbgvis::Visualize)]` 在 Rust 内递归格式化逻辑值；普通字段优先 Visualize，再回退 Debug、Display。HashMap/Vec 等使用公共迭代接口，不解析内部存储，不需要用户编写分页。
 
-默认配置为 `native` 和 `execution=manual`，加载脚本不会自动运行 Rust 格式化函数。显式 `dbgvis print` 默认使用 Debug；开启 automatic 后，变量窗口使用所选模式。
+当前为 **nightly specialization + GDB v2**，不保留 v1/LLDB 兼容层。默认关闭项目 `visualize` feature；启用后仍默认 `native/manual`，加载脚本不自动调用目标函数。
 
 ## 快速开始
 
 ```sh
-cargo build
-rust-gdb -iex "add-auto-load-safe-path $(pwd)/target/debug/dbg-visualizer" target/debug/dbg-visualizer
+cargo build --features visualize
+rust-gdb -iex "add-auto-load-safe-path /absolute/path/dbg-visualizer/target/debug/dbg-visualizer" target/debug/dbg-visualizer
 ```
 
-在 GDB 中：
+将 safe-path 替换为实际二进制绝对路径，不使用 `*`。GDB 脚本由 runtime 自带并嵌入产物，消费项目不需要自己的 build.rs 或 Python 副本。
 
 ```text
 break dbg_visualizer::checkpoint
 run
 up
-dbgvis print bytes
+dbgvis print app
+dbgvis print map
+dbgvis print external_map
 dbgvis print --mode display point
 dbgvis print --buffer 8 map
-dbgvis page --start 0 --count 2 map
-dbgvis config summary.mode debug
+dbgvis config summary.mode auto
 dbgvis config execution automatic
-dbgvis config children.mode structured
-print map
+print point
 ```
 
-在 LLDB 中：
-
-```sh
-lldb target/debug/dbg-visualizer
-```
+示例 `map` 输出：
 
 ```text
-command source .lldbinit
-dbgvis print --mode display point
-dbgvis config summary.mode debug
-dbgvis config execution automatic
-dbgvis config children.mode structured
-frame variable map
+{"points": [Some(Point { x: 1, y: 2 }), None]}
 ```
 
-VS Code 使用仓库的 `.vscode/launch.json`。在 `checkpoint` 停下后选择调用栈中的 `main` 帧，调试控制台使用同样的 `dbgvis` 命令。
+AppState 演示 a/b/c 三个库的组合、非 Debug 类型、第三方 Debug/Display 字段、skip 和嵌套容器。另有三个 IndexMap 实例、hashbrown::HashMap、Bytes、SocketAddr、借用/const 泛型及无 Debug 的 ZST hasher。
 
 ## 文档
 
-- [使用与注册指南](docs/使用指南.md)：配置、加载、注册新类型、容器适配和限制。
-- [协议 v1](docs/协议-v1.md)：入口、布局、缓冲区和错误码。
-- [实现计划](docs/实现计划.md)：原始需求及实施阶段。
-- [验收记录](docs/验收记录.md)：测试范围、支持矩阵和性能基线。
+- [使用指南](docs/使用指南.md)：接入 API、feature 开关、GDB 命令与安全边界。
+- [实现计划](docs/实现计划.md)：已批准路线及安装分发等后续任务。
+- [协议 v2](docs/协议-v2.md)：注册、mailbox 与有界文本。
+- [第二阶段验收记录](docs/第二阶段验收记录.md)：实际测试、已知限制和未完成项。
+- [Q0 技术验证](docs/Q0技术验证.md)：为何采用 nightly；第一阶段文档只作归档。
 
 ## 验证
 
 ```sh
-cargo test --offline --workspace
-cargo clippy --offline --workspace --all-targets -- -D warnings
-python3 -m unittest discover -s tests -p 'test_*.py'
-python3 tests/integration/build_profiles.py
-python3 tests/integration/run.py --faults --core --benchmark
-python3 tests/integration/codelldb.py --adapter /path/to/extension/adapter/codelldb
+cargo fetch --locked
+cargo fmt --all -- --check
+cargo clippy --offline --workspace --all-targets --all-features -- -D warnings
+cargo test --offline --workspace --all-features
+python3 tests/compiler/run.py
+python3 tests/integration/run.py --faults --lto --relocated
 ```
 
-首次离线验证前运行 `cargo fetch --locked`。集成测试需要 Linux 本地 ptrace 权限；每个 debugger 子进程有外部超时限制。
+当前验证环境为 Linux x86_64、GDB 17.1、rustc 1.99.0-nightly (12c36e253 2026-08-10)。集成测试需要本地 ptrace 权限。缺少全部格式化能力的自动分派实例需 `cargo build` 才保证诊断，不能仅依赖 `cargo check`。
 
-当前支持 Linux x86_64、本地调试、单一可执行程序注册表。有界输出不保证用户 `fmt` 纯、无分配或不会阻塞。core dump 使用原生视图；完整支持范围见验收记录。
+有界缓冲区不保证用户 fmt 纯、无分配或不阻塞。core dump 和无法可靠定位的值只能走 native。核心已经实现；`cargo-dbgvis setup/doctor/uninstall` 与完整发布演练尚未实现，crate 尚未发布。

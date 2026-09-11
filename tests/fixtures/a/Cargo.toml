@@ -1,0 +1,11 @@
+[package]
+name = "demo-a"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+visualize = ["dep:dbgvis"]
+
+[dependencies]
+dbgvis = { path = "../../../crates/dbgvis", optional = true, features = ["derive"] }

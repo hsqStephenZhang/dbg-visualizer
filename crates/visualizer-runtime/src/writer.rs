@@ -25,6 +25,9 @@ impl<'a> BoundedWriter<'a> {
     pub fn truncated(&self) -> bool {
         self.truncated
     }
+    pub fn remaining(&self) -> usize {
+        self.buffer.len() - self.written
+    }
     pub fn as_bytes(&self) -> &[u8] {
         &self.buffer[..self.written]
     }

@@ -1,5 +1,0 @@
-command script import debugger/lldb/dbgvis_lldb.py
-dbgvis-install-hook
-breakpoint set --name dbg_visualizer::checkpoint
-run
-up
