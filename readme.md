@@ -56,6 +56,6 @@ python3 tests/compiler/run.py
 python3 tests/integration/run.py --faults --lto --relocated
 ```
 
-当前验证环境为 Linux x86_64、GDB 17.1、rustc 1.99.0-nightly (12c36e253 2026-08-10)。集成测试需要本地 ptrace 权限。缺少全部格式化能力的自动分派实例需 `cargo build` 才保证诊断，不能仅依赖 `cargo check`。
+当前验证环境为 Linux x86_64、GDB 17.1、rustc 1.99.0-nightly (12c36e253 2026-08-10)。集成测试需要本地 ptrace 权限；在 macOS 等非 Linux 平台上该套件直接跳过（Apple/MSVC 目标不生成 `.debug_gdb_scripts`），其余四步照常运行。调试构建必须保留 `debug = 2` 且不 strip，否则嵌入脚本与 anchor 类型信息都会消失。缺少全部格式化能力的自动分派实例需 `cargo build` 才保证诊断，不能仅依赖 `cargo check`。
 
 有界缓冲区不保证用户 fmt 纯、无分配或不阻塞。core dump 和无法可靠定位的值只能走 native。核心已经实现；`cargo-dbgvis setup/doctor/uninstall` 与完整发布演练尚未实现，crate 尚未发布。

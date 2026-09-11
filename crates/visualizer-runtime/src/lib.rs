@@ -2,8 +2,10 @@
 #![feature(specialization)]
 #![allow(incomplete_features)]
 
+// Embeds the GDB bridge (gdb.py wrapped by build.rs) into `.debug_gdb_scripts` of every
+// executable that links this crate. Requires debuginfo in the final build and a target that
+// emits the section (Linux ELF; Apple and MSVC targets never do).
 include!(concat!(env!("OUT_DIR"), "/autoload.rs"));
-pub const GDB_SCRIPT: &str = include_str!("../gdb.py");
 
 mod dispatch;
 mod formatter;

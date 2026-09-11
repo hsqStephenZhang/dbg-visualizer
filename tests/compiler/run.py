@@ -2,9 +2,18 @@
 from pathlib import Path
 import os
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
+# rustc target spec `emit-debug-gdb-scripts` is false for Apple and MSVC targets.
+EMITS_GDB_SECTION = sys.platform == "linux"
+
+
+def embedded_gdb_script(binary):
+    """Whether the final executable carries the inlined dbgvis bridge (prologue marker)."""
+    return b"types.ModuleType('dbgvis_gdb')" in Path(binary).read_bytes()
+
 CASES = {
     "alias_generic": (True, "", r'''
 use std::{fmt, marker::PhantomData, collections::HashMap};
@@ -239,16 +248,28 @@ fn main() {
             assert "linkme" in tree and "DBG_VIS_MODULE_V2" in symbols
             assert "__DBG_ANCHOR_UnusedRegistered" in symbols
             assert "__DBG_ANCHOR_Item" in symbols and "__DBG_ANCHOR_State" in symbols
+            assert embedded_gdb_script(binary) == EMITS_GDB_SECTION, "debuginfo builds must embed the bridge"
         else:
             assert all(name not in tree for name in ("dbgvis v", "visualizer-runtime", "dbgvis-macros", "linkme")), tree
             assert all(name not in symbols for name in ("DBG_VIS_MODULE", "dbgvis_dispatch", "__DBG_RUNTIME", "visualizer_runtime", "linkme", "__DBG_ANCHOR", "__DBG_REGISTRATION"))
+            assert not embedded_gdb_script(binary)
     print("TEMPORARY_CROSS_CRATE_DEBUG_LTO_OK")
     print("FEATURE_DISABLED_OK")
+    # rustc emits `.debug_gdb_scripts` only when the final crate has debuginfo. A consumer's
+    # default release profile (debug = 0) keeps the Rust registry but silently loses the bridge.
+    target = ROOT / "target/feature-contracts/no-debuginfo"
+    subprocess.run(["cargo", "+nightly", "build", "--offline", "--features", "visualize", "--release", "--target-dir", target],
+                   cwd=project, check=True, timeout=120, env=dict(os.environ, CARGO_PROFILE_RELEASE_DEBUG="0"))
+    binary = target / "release/dbgvis-feature-consumer"
+    subprocess.run([binary], check=True, timeout=10)
+    assert "DBG_VIS_MODULE_V2" in subprocess.check_output(["nm", binary], text=True)
+    assert not embedded_gdb_script(binary), "debug = 0 must not embed the bridge; the guide documents this"
+    print("NO_DEBUGINFO_DROPS_GDB_SCRIPT_OK")
 
 
 def main():
     with tempfile.TemporaryDirectory(prefix="dbgvis consumer ") as directory:
-        project = Path(directory)
+        project = Path(directory).resolve()  # cargo canonicalizes path deps (macOS /var symlink)
         (project / "src").mkdir()
         (project / "Cargo.toml").write_text(f'''[package]
 name = "dbgvis-compile-consumer"

@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import subprocess
 import shutil
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +37,10 @@ def main():
     parser.add_argument("--lto", action="store_true")
     parser.add_argument("--relocated", action="store_true")
     options = parser.parse_args()
+    if sys.platform != "linux":
+        # Apple/MSVC rustc targets never emit `.debug_gdb_scripts`, and GDB cannot ptrace here.
+        print("GDB_V2_SUITE_SKIPPED: live GDB auto-load scenarios require Linux", flush=True)
+        return
     run(["cargo", "build", "--offline", "--example", "demo"])
     run(debugger(ROOT / "target/debug/examples/demo", "gdb_checks.py"), "GDB_V2_INTEGRATION_OK")
     if options.lto:
