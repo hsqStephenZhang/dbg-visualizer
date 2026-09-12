@@ -1,5 +1,6 @@
 /target
 __pycache__/
 *.pyc
+.gdb_history
 /tools/auto-register/target
 /tools/auto-register/Cargo.lock

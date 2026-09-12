@@ -10,7 +10,7 @@ import signal
 import subprocess
 import tempfile
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]  # docs/archive/q0/ -> repo root
 SOURCES = Path(__file__).resolve().parent
 
 

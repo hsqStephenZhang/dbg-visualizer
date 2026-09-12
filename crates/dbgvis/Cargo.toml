@@ -8,5 +8,5 @@ default = []
 derive = ["dep:dbgvis-macros"]
 
 [dependencies]
-visualizer-runtime = { path = "../visualizer-runtime", version = "0.2.0" }
+dbgvis-runtime = { path = "../dbgvis-runtime", version = "0.2.0" }
 dbgvis-macros = { path = "../dbgvis-macros", version = "0.2.0", optional = true }

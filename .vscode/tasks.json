@@ -4,7 +4,7 @@
         {
             "label": "dbgvis: build auto-register driver",
             "type": "shell",
-            "command": "python3 tools/auto-register/build.py",
+            "command": "cargo xtask driver",
             "problemMatcher": "$rustc",
             "group": "build"
         },
@@ -18,7 +18,7 @@
         {
             "label": "dbgvis: run auto-register contracts",
             "type": "shell",
-            "command": "python3 tools/auto-register/test.py",
+            "command": "cargo xtask autoregister",
             "problemMatcher": "$rustc",
             "group": "test"
         }

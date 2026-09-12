@@ -23,7 +23,7 @@ name = "dbgvis"
 version = "0.2.0"
 dependencies = [
  "dbgvis-macros",
- "visualizer-runtime",
+ "dbgvis-runtime",
 ]
 
 [[package]]
@@ -34,6 +34,13 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "toml",
+]
+
+[[package]]
+name = "dbgvis-runtime"
+version = "0.2.0"
+dependencies = [
+ "linkme",
 ]
 
 [[package]]
@@ -57,6 +64,12 @@ dependencies = [
  "equivalent",
  "hashbrown",
 ]
+
+[[package]]
+name = "libc"
+version = "0.2.189"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "linkme"
@@ -193,14 +206,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
-name = "visualizer-runtime"
-version = "0.2.0"
-dependencies = [
- "linkme",
-]
-
-[[package]]
 name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
+
+[[package]]
+name = "xtask"
+version = "0.0.0"
+dependencies = [
+ "libc",
+]

@@ -37,12 +37,12 @@ print point
 {"points": [Some(Point { x: 1, y: 2 }), None]}
 ```
 
-自包含 AppState 演示第三方字段、skip 和嵌套容器。另有三个 IndexMap 实例、hashbrown::HashMap、Bytes、SocketAddr、借用/const 泛型及无 Debug 的 ZST hasher。跨 crate 和 feature 开关验证由测试运行时生成临时项目，workspace 只保留三个核心 crate。
+自包含 AppState 演示第三方字段、skip 和嵌套容器。另有三个 IndexMap 实例、hashbrown::HashMap、Bytes、SocketAddr、借用/const 泛型及无 Debug 的 ZST hasher。跨 crate 和 feature 开关验证由测试运行时生成临时项目，workspace 只保留三个核心 crate 加一个 xtask 验证入口。
 
 若要运行无需手写根登记的 `demo`，在仓库根目录执行（driver 要求 `rustc 1.99.0-nightly (12c36e253 2026-08-10)`）：
 
 ```sh
-python3 tools/auto-register/build.py
+cargo xtask driver
 DBGVIS_AUTO_CRATE=demo RUSTC_WORKSPACE_WRAPPER="$PWD/tools/auto-register/wrapper.py" CARGO_TARGET_DIR=target/auto-register/examples cargo build --example demo
 rust-gdb -iex "add-auto-load-safe-path /absolute/path/dbg-visualizer/target/auto-register/examples/debug/examples/demo" target/auto-register/examples/debug/examples/demo
 ```
@@ -65,9 +65,9 @@ cargo fetch --locked
 cargo fmt --all -- --check
 cargo clippy --offline --workspace --all-targets --all-features -- -D warnings
 cargo test --offline --workspace --all-features
-python3 tests/compiler/run.py
-python3 tests/integration/run.py --faults --lto --relocated
-python3 tools/auto-register/test.py --gdb
+cargo xtask compiler
+cargo xtask integration --faults --lto --relocated
+cargo xtask autoregister --gdb
 ```
 
 当前验证环境为 Linux x86_64、GDB 17.1、rustc 1.99.0-nightly (12c36e253 2026-08-10)。集成测试需要本地 ptrace 权限；在 macOS 等非 Linux 平台上该套件直接跳过（Apple/MSVC 目标不生成 `.debug_gdb_scripts`），其余四步照常运行。调试构建必须保留 `debug = 2` 且不 strip，否则嵌入脚本与 anchor 类型信息都会消失。缺少全部格式化能力的自动分派实例需 `cargo build` 才保证诊断，不能仅依赖 `cargo check`。

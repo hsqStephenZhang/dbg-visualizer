@@ -287,7 +287,7 @@ impl Callbacks for Driver {
             .find_map(|(did, path)| {
                 (tcx.item_name(*did).as_str() == "Visualize"
                     && tcx.def_kind(*did) == DefKind::Trait
-                    && tcx.crate_name(did.krate).as_str() == "visualizer_runtime")
+                    && tcx.crate_name(did.krate).as_str() == "dbgvis_runtime")
                     .then(|| (*did, path.rsplit_once("::").unwrap().0.to_string()))
             })
             .expect("dbgvis dependency must be used (call enable!())");

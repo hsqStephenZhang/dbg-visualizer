@@ -56,13 +56,16 @@ def main():
     if option(args, "--crate-type") != "bin":
         sys.exit("The auto-register experiment supports only a selected bin/example, not library builds")
     if not DRIVER.exists():
-        sys.exit("Build the experiment first: python3 tools/auto-register/build.py")
+        sys.exit("Build the experiment first: cargo xtask driver")
     actual = checked_output([rustc, "--version"])
     if actual != EXPECTED:
         sys.exit(f"Unsupported driver toolchain: {actual}; expected {EXPECTED}")
-    newest = max(p.stat().st_mtime_ns for p in (Path(__file__), Path(__file__).with_name("driver.rs"), Path(__file__).with_name("build.py")))
+    # The driver must be newer than every input that defines it: this wrapper, the
+    # driver source, and the xtask gate that pins the toolchain and build flags.
+    newest = max(p.stat().st_mtime_ns for p in (Path(__file__), Path(__file__).with_name("driver.rs"),
+                                                ROOT / "xtask/src/autoregister.rs"))
     if DRIVER.stat().st_mtime_ns < newest:
-        sys.exit("Driver is stale; run python3 tools/auto-register/build.py")
+        sys.exit("Driver is stale; run cargo xtask driver")
     sysroot = checked_output([rustc, "--print", "sysroot"])
     args += ["--sysroot", sysroot] if option(args, "--sysroot") is None else []
     digest = hashlib.sha256((str(Path.cwd()) + repr(args)).encode()).hexdigest()[:20]

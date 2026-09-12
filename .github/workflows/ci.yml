@@ -18,7 +18,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --offline --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --offline --workspace --all-features
-      - run: python3 tests/compiler/run.py
+      - run: cargo xtask compiler
         timeout-minutes: 5
-      - run: python3 tests/integration/run.py --faults --lto --relocated
+      - run: cargo xtask integration --faults --lto --relocated
         timeout-minutes: 5
