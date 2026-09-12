@@ -48,20 +48,47 @@ def scan_args(args, directory):
     return result + ["--out-dir", str(directory), "--emit=metadata"]
 
 
+def scan_directory(selected):
+    """Where this session records the workspace libraries whose MIR was retained."""
+    return ROOT / "target/auto-register/scan" / selected
+
+
 def main():
     rustc, *args = sys.argv[1:]
     selected = os.environ.get("DBGVIS_AUTO_CRATE")
-    if not selected or option(args, "--crate-name") != selected:
+    if not selected:
         return subprocess.call([rustc, *args], close_fds=False)
+    name = option(args, "--crate-name")
     crate_type = option(args, "--crate-type")
-    if crate_type != "bin":
-        # A package holding both src/lib.rs and src/main.rs gives both targets the same
-        # crate name, and Cargo builds the library first. Only the leaf executable can
-        # carry registrations -- `enable!()` and `.debug_gdb_scripts` both live there --
-        # so pass the library through and wait for the bin invocation. Announce it, so a
-        # crate name that never reaches a bin target does not just fail silently.
-        print(f"dbgvis auto: passing through {selected} (--crate-type {crate_type});"
-              " only the bin/example target is instrumented", file=sys.stderr)
+    # Scanning dependency crates is opt-in: DBGVIS_SCAN_DEPS=1 also reads the named
+    # variables of the workspace libraries. It is off by default because it is not
+    # free -- it keeps the libraries' MIR with `-Zalways-encode-mir`, and every local
+    # it discovers becomes a registered root, so a container local whose element has
+    # no formatting trait now fails the build from library code the debugging session
+    # may never look at. Off, the scan stays inside the executable's own functions.
+    scan_deps = os.environ.get("DBGVIS_SCAN_DEPS", "") not in ("", "0")
+
+    if name != selected or crate_type != "bin":
+        # Every workspace crate that is not the selected executable. A non-generic
+        # function is codegened in its own crate, so its locals are invisible to the
+        # executable's scan unless the MIR survives; keep it and record the crate name
+        # for the driver. Library targets only: build scripts and proc macros are not
+        # linked into the executable, so their types can never be registered there.
+        if scan_deps and name and crate_type not in ("bin", "proc-macro"):
+            directory = scan_directory(selected)
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / name).write_text("")
+            if "-Zalways-encode-mir" not in args:
+                args = args + ["-Zalways-encode-mir"]
+        if name == selected:
+            # A package holding both src/lib.rs and src/main.rs gives both targets the
+            # same crate name, and Cargo builds the library first. Only the leaf
+            # executable can carry registrations -- `enable!()` and
+            # `.debug_gdb_scripts` both live there -- so pass the library through and
+            # wait for the bin invocation. Announce it, so a crate name that never
+            # reaches a bin target does not just fail silently.
+            print(f"dbgvis auto: passing through {selected} (--crate-type {crate_type});"
+                  " only the bin/example target is instrumented", file=sys.stderr)
         return subprocess.call([rustc, *args], close_fds=False)
     if not DRIVER.exists():
         sys.exit("Build the experiment first: cargo xtask driver")
@@ -84,6 +111,13 @@ def main():
     env.pop("DBGVIS_INJECT", None)
     env["DBGVIS_PLAN"] = str(plan)
     env["DBGVIS_TOOL_DIR"] = str(Path(__file__).parent)
+    # Names recorded while the workspace libraries were built. A name the executable
+    # does not actually link matches no crate and is ignored, so a stale entry left by
+    # an earlier session cannot widen the scan.
+    recorded = scan_directory(selected)
+    env["DBGVIS_SCAN_CRATES"] = ",".join(
+        sorted(p.name for p in recorded.iterdir()) if scan_deps and recorded.is_dir() else []
+    )
     with (directory / "invocations.log").open("a") as log:
         log.write(f"{time.time_ns()} {os.getpid()}\n")
     print(f"dbgvis auto: scan {selected} -> {plan}", file=sys.stderr)

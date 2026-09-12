@@ -296,6 +296,14 @@ debug = 2
         r#"
 #[derive(Debug)] pub struct Shared { pub count: u32 }
 pub fn make() -> Shared { Shared { count: 5 } }
+// `LibOnly` is never a named variable in the executable, so it is reachable only
+// by scanning this crate's own functions.
+#[derive(Debug)] pub struct LibOnly { pub tag: u8 }
+pub fn inside() -> u8 {
+    let hidden = LibOnly { tag: 3 };
+    std::hint::black_box(&hidden);
+    hidden.tag
+}
 "#,
     )?;
     write(
@@ -305,7 +313,8 @@ fn main() {
     dv::enable!();
     let shared = both_targets::make();
     let items = vec![both_targets::make()];
-    std::hint::black_box((&shared, &items));
+    let tag = both_targets::inside();
+    std::hint::black_box((&shared, &items, &tag));
     println!("BOTH_TARGETS_EXECUTED");
 }
 "#,
@@ -315,6 +324,7 @@ fn main() {
         Run::new("cargo")
             .args(["build", "--offline"])
             .cwd(project)
+            .env("DBGVIS_SCAN_DEPS", "1")
             .timeout(600),
         "both_targets",
         &target,
@@ -336,10 +346,39 @@ fn main() {
             "plan lacks {needle}\n{generated}\n{report}"
         );
     }
+    // Only the dependency scan can see a type that is a named variable solely inside
+    // the library; the executable never binds one.
+    ensure!(
+        generated.contains("::both_targets::r#LibOnly"),
+        "dependency scan lost the library-only local\n{generated}\n{report}"
+    );
     Run::new(target.join("debug/both_targets"))
         .marker("BOTH_TARGETS_EXECUTED")
         .timeout(30)
         .check()?;
+
+    // The default keeps the scan inside the executable: the library-only local
+    // disappears while the executable's own locals stay. Left unset on purpose --
+    // this is what an ordinary build does.
+    let narrow = root().join("target/auto-register/both-targets-narrow");
+    let output = environment(
+        Run::new("cargo")
+            .args(["build", "--offline"])
+            .cwd(project)
+            .timeout(600),
+        "both_targets",
+        &narrow,
+    )
+    .output()?;
+    let (_, generated, report) = plan(&output)?;
+    ensure!(
+        !generated.contains("LibOnly"),
+        "the default scan must not reach into the library\n{generated}\n{report}"
+    );
+    ensure!(
+        generated.contains("::both_targets::r#Shared"),
+        "the default scan must keep the executable's own locals\n{generated}"
+    );
     println!("AUTO_LIB_AND_BIN_OK");
     Ok(())
 }

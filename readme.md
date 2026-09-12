@@ -47,7 +47,7 @@ DBGVIS_AUTO_CRATE=demo RUSTC_WORKSPACE_WRAPPER="$PWD/tools/auto-register/wrapper
 rust-gdb -iex "add-auto-load-safe-path /absolute/path/dbg-visualizer/target/auto-register/examples/debug/examples/demo" target/auto-register/examples/debug/examples/demo
 ```
 
-断点为 `demo::checkpoint`，`run`、`up` 后用 `dbgvis p map` 或 `dbgvis p index_borrowed`。普通 `cargo build --example demo` 不启用 driver，不能据此期待这些根已登记。`dbgvis p -m native "hello"` 保留表达式引号；`--` 可结束打印选项。完整命令见 `dbgvis help`。
+断点为 `demo::checkpoint`，`run`、`up` 后用 `dbgvis p map` 或 `dbgvis p index_borrowed`。普通 `cargo build --example demo` 不启用 driver，不能据此期待这些根已登记。driver 默认只扫可执行目标自身；对「逻辑在 lib、main 只是入口」的布局，需要 `DBGVIS_SCAN_DEPS=1` 才能扫到库里的局部变量，代价是给 workspace 库加 `-Zalways-encode-mir` 且 strict 失败面变大。细节见[两阶段自动注册实验](docs/自动注册可行性验证.md)。`dbgvis p -m native "hello"` 保留表达式引号；`--` 可结束打印选项。完整命令见 `dbgvis help`。
 
 ## 文档
 

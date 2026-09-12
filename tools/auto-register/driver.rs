@@ -106,6 +106,71 @@ fn paths(tcx: TyCtxt<'_>) -> HashMap<DefId, String> {
     result
 }
 
+/// Non-generic functions of the dependency crates named in `DBGVIS_SCAN_CRATES`.
+///
+/// Upstream non-generic functions are codegened in their own crate, so they never
+/// appear in this crate's mono items and their locals are invisible to the scan.
+/// Enumerating them from the module tree recovers those locals, but only works when
+/// the crate carries MIR, which the wrapper arranges with `-Zalways-encode-mir`.
+///
+/// The crate names are explicit rather than inferred from MIR availability: the
+/// distributed `std` and `core` also encode MIR, and scanning them would turn every
+/// standard-library local into a registered root.
+fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
+    let Ok(selected) = std::env::var("DBGVIS_SCAN_CRATES") else {
+        return Vec::new();
+    };
+    let selected: HashSet<&str> = selected.split(',').filter(|s| !s.is_empty()).collect();
+    if selected.is_empty() {
+        return Vec::new();
+    }
+    let mut queue: VecDeque<DefId> = VecDeque::new();
+    for &cnum in tcx.crates(()) {
+        if selected.contains(tcx.crate_name(cnum).as_str()) {
+            queue.push_back(cnum.as_def_id());
+        }
+    }
+    let mut result = Vec::new();
+    let mut visited = HashSet::new();
+    // Only a function with no generic parameters has a single instantiation the scan
+    // can name; a generic one has no concrete arguments to substitute here.
+    fn mono<'tcx>(tcx: TyCtxt<'tcx>, did: DefId) -> Option<ty::Instance<'tcx>> {
+        (tcx.generics_of(did).count() == 0 && tcx.is_mir_available(did))
+            .then(|| ty::Instance::mono(tcx, did))
+    }
+    while let Some(module) = queue.pop_front() {
+        if !visited.insert(module) {
+            continue;
+        }
+        // Stay inside the selected crates: a `pub use` can re-export another crate's
+        // module, and following it would drag in the whole standard library.
+        if !selected.contains(tcx.crate_name(module.krate).as_str()) {
+            continue;
+        }
+        for child in tcx.module_children(module) {
+            let Res::Def(kind, did) = child.res else {
+                continue;
+            };
+            match kind {
+                DefKind::Mod => queue.push_back(did),
+                DefKind::Fn => result.extend(mono(tcx, did)),
+                // Inherent methods are not module children; reach them through the type.
+                DefKind::Struct | DefKind::Enum | DefKind::Union => {
+                    for implementation in tcx.inherent_impls(did) {
+                        for assoc in tcx.associated_item_def_ids(*implementation) {
+                            if tcx.def_kind(*assoc) == DefKind::AssocFn {
+                                result.extend(mono(tcx, *assoc));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    result
+}
+
 struct Rendered {
     expr: String,
     borrowed: bool,
@@ -326,6 +391,7 @@ impl Callbacks for Driver {
 
         // collect types for visualizer code generation
         let mut candidates = HashSet::new();
+        let mut instances: Vec<ty::Instance<'_>> = Vec::new();
         for cgu in tcx.collect_and_partition_mono_items(()).codegen_units {
             for item in cgu.items().keys() {
                 let MonoItem::Fn(instance) = item else {
@@ -334,12 +400,24 @@ impl Callbacks for Driver {
                 if instance.def_id().krate != LOCAL_CRATE {
                     continue;
                 }
-                let name = tcx.def_path_str(instance.def_id());
-                if name.contains("__dbgvis") || name.contains("__Dbg") {
-                    continue;
-                }
-                let body = tcx.instance_mir(instance.def);
-                for variable in &body.var_debug_info {
+                instances.push(*instance);
+            }
+        }
+        // Named variables in dependency crates. A non-generic function of an upstream
+        // crate is codegened there, not here, so it never appears in this crate's
+        // mono items: it has to be enumerated from the crate's module tree instead,
+        // and its MIR only exists because the wrapper built that crate with
+        // `-Zalways-encode-mir`. The crate list is explicit because the distributed
+        // std/core encode MIR too, and scanning those would register thousands of
+        // standard-library locals.
+        instances.extend(dependency_functions(tcx));
+        for instance in instances {
+            let name = tcx.def_path_str(instance.def_id());
+            if name.contains("__dbgvis") || name.contains("__Dbg") {
+                continue;
+            }
+            let body = tcx.instance_mir(instance.def);
+            for variable in &body.var_debug_info {
                     if variable.source_info.span.from_expansion() {
                         continue;
                     }
@@ -364,8 +442,7 @@ impl Callbacks for Driver {
                         ty::TypingEnv::fully_monomorphized(),
                         ty::EarlyBinder::bind(tcx, local_ty),
                     );
-                    candidates.insert(t);
-                }
+                candidates.insert(t);
             }
         }
         let mut lines = BTreeMap::new();
