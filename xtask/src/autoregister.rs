@@ -260,7 +260,87 @@ dv = {{ package = "dbgvis", path = "{facade}", features = ["derive"] }}
         .timeout(30)
         .check()?;
     println!("AUTO_CROSS_CRATE_DEDUP_OK");
+    drop(scratch);
+    same_name_lib_and_bin()?;
     println!("AUTO_COMPILER_CONTRACTS_OK");
+    Ok(())
+}
+
+/// A package holding both `src/lib.rs` and `src/main.rs` gives both targets the
+/// package's crate name, and Cargo builds the library first. The wrapper must let
+/// that invocation through and instrument the bin that follows, rather than failing
+/// the build -- which is what it used to do, making the commonest Cargo layout
+/// unusable. Every other fixture here sidesteps it with a distinct `[[bin]] name`.
+fn same_name_lib_and_bin() -> Result {
+    let scratch = TempDir::new("dbgvis lib and bin ")?;
+    let project = scratch.path();
+    let facade = root().join("crates/dbgvis").display().to_string();
+    write(
+        project.join("Cargo.toml"),
+        &format!(
+            r#"
+[package]
+name = "both_targets"
+version = "0.0.0"
+edition = "2024"
+[workspace]
+[dependencies]
+dv = {{ package = "dbgvis", path = "{facade}", features = ["derive"] }}
+[profile.dev]
+debug = 2
+"#
+        ),
+    )?;
+    write(
+        project.join("src/lib.rs"),
+        r#"
+#[derive(Debug)] pub struct Shared { pub count: u32 }
+pub fn make() -> Shared { Shared { count: 5 } }
+"#,
+    )?;
+    write(
+        project.join("src/main.rs"),
+        r#"
+fn main() {
+    dv::enable!();
+    let shared = both_targets::make();
+    let items = vec![both_targets::make()];
+    std::hint::black_box((&shared, &items));
+    println!("BOTH_TARGETS_EXECUTED");
+}
+"#,
+    )?;
+    let target = root().join("target/auto-register/both-targets");
+    let output = environment(
+        Run::new("cargo")
+            .args(["build", "--offline"])
+            .cwd(project)
+            .timeout(600),
+        "both_targets",
+        &target,
+    )
+    .output()?;
+    ensure!(
+        output.contains("passing through both_targets (--crate-type lib)"),
+        "the library build must be announced and passed through\n{output}"
+    );
+    let (_, generated, report) = plan(&output)?;
+    // The lib is a separate crate: its types reach the plan through the bin's own
+    // locals, not by scanning the library.
+    for needle in [
+        "::both_targets::r#Shared",
+        "r#Vec<::both_targets::r#Shared>",
+    ] {
+        ensure!(
+            generated.contains(needle),
+            "plan lacks {needle}\n{generated}\n{report}"
+        );
+    }
+    Run::new(target.join("debug/both_targets"))
+        .marker("BOTH_TARGETS_EXECUTED")
+        .timeout(30)
+        .check()?;
+    println!("AUTO_LIB_AND_BIN_OK");
     Ok(())
 }
 

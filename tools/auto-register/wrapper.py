@@ -53,8 +53,16 @@ def main():
     selected = os.environ.get("DBGVIS_AUTO_CRATE")
     if not selected or option(args, "--crate-name") != selected:
         return subprocess.call([rustc, *args], close_fds=False)
-    if option(args, "--crate-type") != "bin":
-        sys.exit("The auto-register experiment supports only a selected bin/example, not library builds")
+    crate_type = option(args, "--crate-type")
+    if crate_type != "bin":
+        # A package holding both src/lib.rs and src/main.rs gives both targets the same
+        # crate name, and Cargo builds the library first. Only the leaf executable can
+        # carry registrations -- `enable!()` and `.debug_gdb_scripts` both live there --
+        # so pass the library through and wait for the bin invocation. Announce it, so a
+        # crate name that never reaches a bin target does not just fail silently.
+        print(f"dbgvis auto: passing through {selected} (--crate-type {crate_type});"
+              " only the bin/example target is instrumented", file=sys.stderr)
+        return subprocess.call([rustc, *args], close_fds=False)
     if not DRIVER.exists():
         sys.exit("Build the experiment first: cargo xtask driver")
     actual = checked_output([rustc, "--version"])
