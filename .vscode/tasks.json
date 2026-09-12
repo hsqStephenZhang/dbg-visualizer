@@ -1,0 +1,26 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "dbgvis: build auto-register driver",
+            "type": "shell",
+            "command": "python3 tools/auto-register/build.py",
+            "problemMatcher": "$rustc",
+            "group": "build"
+        },
+        {
+            "label": "dbgvis: check auto-register driver",
+            "type": "shell",
+            "command": "cargo check --manifest-path tools/auto-register/Cargo.toml",
+            "problemMatcher": "$rustc",
+            "group": "test"
+        },
+        {
+            "label": "dbgvis: run auto-register contracts",
+            "type": "shell",
+            "command": "python3 tools/auto-register/test.py",
+            "problemMatcher": "$rustc",
+            "group": "test"
+        }
+    ]
+}

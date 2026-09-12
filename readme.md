@@ -4,6 +4,8 @@
 
 非泛型 derive 同时自动登记根入口，由 linkme 跨 crate 收集；main 只需 `dbgvis::enable!()`，不再需要集中式注册模块。只复用 Debug 的类型用 `#[dbgvis::register]`；第三方或泛型具体实例用 `dbgvis::register_type!(T)`。类型级 `#[dbgvis(no_register)]` 可关闭自动登记。
 
+多个 crate 登记同一具体类型时，runtime 会合并其模式和函数入口；size/align 不一致的同名类型仍会拒绝，避免链接顺序决定行为。
+
 当前为 **nightly specialization + GDB v2**，不保留 v1/LLDB 兼容层。[examples/demo.rs](examples/demo.rs) 的自有类型统一直接 derive Visualize，无 feature gate；运行时仍默认 `native/manual`，加载脚本不自动调用目标函数。生产项目的可选 feature 接入方式见使用指南。
 
 ## 快速开始
@@ -44,6 +46,7 @@ print point
 - [协议 v2](docs/协议-v2.md)：注册、mailbox 与有界文本。
 - [第二阶段验收记录](docs/第二阶段验收记录.md)：实际测试、已知限制和未完成项。
 - [Q0 技术验证](docs/Q0技术验证.md)：为何采用 nightly；第一阶段文档只作归档。
+- [两阶段自动注册实验](docs/自动注册可行性验证.md)：无需逐类型手写登记的 driver 原型、验证方法与已知限制（可选，不改变默认构建）。
 
 ## 验证
 

@@ -1,0 +1,18 @@
+[package]
+name = "dbgvis-auto-register-driver"
+version = "0.1.0"
+edition = "2024"
+publish = false
+autobins = false
+
+[package.metadata.rust-analyzer]
+# Tell RA that `extern crate rustc_*` refers to the rustc-dev sysroot.
+rustc_private = true
+
+# This is intentionally a nested workspace: the driver uses rustc_private and
+# must not become a dependency or a build target of the runtime workspace.
+[workspace]
+
+[[bin]]
+name = "dbgvis-auto-register-driver"
+path = "driver.rs"

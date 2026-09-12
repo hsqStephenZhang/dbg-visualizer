@@ -61,6 +61,11 @@ impl Text {
             len: text.len(),
         }
     }
+
+    fn as_str(self) -> &'static str {
+        // Text values are constructed only from &'static str metadata.
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.pointer, self.len)) }
+    }
 }
 // Points only to immutable static strings.
 unsafe impl Sync for Text {}
@@ -96,9 +101,46 @@ pub static VIS_TYPES: [fn() -> Root];
 pub fn collected_roots() -> Vec<Root> {
     assert!(VIS_TYPES.len() <= 4096, "dbgvis: invalid root count");
     let mut roots: Vec<_> = VIS_TYPES.iter().map(|describe| describe()).collect();
-    // Link order is unspecified; never use it to choose defaults or override a type.
-    roots.sort_by_key(|root| root.name);
+    coalesce_roots(&mut roots);
     roots
+}
+
+/// Merge registrations for one concrete type emitted by multiple crates.  A
+/// dependency may register (for example) `u64` and the final binary may also
+/// discover/register it.  The formatter functions are interchangeable only
+/// when the ABI-relevant shape agrees; a same-name, different-shape collision
+/// remains an error instead of being selected by link order.
+fn coalesce_roots(roots: &mut Vec<Root>) {
+    // Link order is unspecified.  Sort the anchor as a deterministic tie-break
+    // before choosing the retained metadata and default mode.
+    roots.sort_by_key(|root| (root.name, root.entry.anchor.as_str()));
+    let mut merged: Vec<Root> = Vec::with_capacity(roots.len());
+    for root in roots.drain(..) {
+        if let Some(previous) = merged.last_mut()
+            && previous.name == root.name
+        {
+            assert_eq!(
+                (previous.entry.size, previous.entry.align),
+                (root.entry.size, root.entry.align),
+                "dbgvis: same type name has incompatible size/alignment"
+            );
+            previous.entry.capabilities |= root.entry.capabilities;
+            previous.entry.auto_fn = previous.entry.auto_fn.or(root.entry.auto_fn);
+            previous.entry.visual_fn = previous.entry.visual_fn.or(root.entry.visual_fn);
+            previous.entry.debug_fn = previous.entry.debug_fn.or(root.entry.debug_fn);
+            previous.entry.display_fn = previous.entry.display_fn.or(root.entry.display_fn);
+            continue;
+        }
+        merged.push(root);
+    }
+    let mut keys = std::collections::HashSet::new();
+    for root in &merged {
+        assert!(
+            keys.insert(root.key),
+            "dbgvis: duplicate root registration marker"
+        );
+    }
+    *roots = merged;
 }
 pub struct Registration<T> {
     root: Root,
@@ -262,15 +304,8 @@ impl Runtime {
         let entries = self.entries.get_or_init(|| {
             let roots = roots();
             assert!(roots.len() <= 4096, "dbgvis: invalid root count");
-            let mut keys = std::collections::HashSet::new();
-            let mut names = std::collections::HashSet::new();
-            for root in &roots {
-                assert!(keys.insert(root.key), "dbgvis: duplicate root registration");
-                assert!(
-                    names.insert(root.name),
-                    "dbgvis: duplicate root type; combine its modes into one registration"
-                );
-            }
+            let mut roots = roots;
+            coalesce_roots(&mut roots);
             roots
                 .into_iter()
                 .map(|r| r.entry)
