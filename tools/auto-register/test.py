@@ -191,14 +191,16 @@ def main():
     args = parser.parse_args()
     run(["python3", TOOLS / "build.py"])
     contracts()
-    env = environment("auto_poc", ROOT / "target/auto-register/demo")
-    for profile, folder in (([], "debug"), (["--profile", "release-lto"], "release-lto")):
-        run(["cargo", "build", "--offline", "--example", "auto_poc", *profile], env=env)
-        binary = Path(env["CARGO_TARGET_DIR"]) / folder / "examples/auto_poc"
-        run([binary])
-        if args.gdb:
-            run(["rust-gdb", "-q", "-nx", "--batch", "-iex", f"add-auto-load-safe-path {binary}",
-                 "-x", TOOLS / "gdb_checks.py", "--args", binary], marker="AUTO_GDB_OK")
+    for example, script, marker in (("auto_poc", "gdb_checks.py", "AUTO_GDB_OK"),
+                                    ("demo", "demo_gdb_checks.py", "AUTO_DEMO_GDB_OK")):
+        env = environment(example, ROOT / "target/auto-register/examples")
+        for profile, folder in (([], "debug"), (["--profile", "release-lto"], "release-lto")):
+            run(["cargo", "build", "--offline", "--example", example, *profile], env=env)
+            binary = Path(env["CARGO_TARGET_DIR"]) / folder / "examples" / example
+            run([binary])
+            if args.gdb:
+                run(["rust-gdb", "-q", "-nx", "--batch", "-iex", f"add-auto-load-safe-path {binary}",
+                     "-x", TOOLS / script, "--args", binary], marker=marker)
     print("AUTO_POC_SUITE_OK", flush=True)
 
 

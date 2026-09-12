@@ -89,6 +89,7 @@ pub struct Entry {
 #[derive(Clone, Copy)]
 pub struct Root {
     key: TypeId,
+    identity: TypeId,
     name: &'static str,
     entry: Entry,
 }
@@ -108,17 +109,30 @@ pub fn collected_roots() -> Vec<Root> {
 /// Merge registrations for one concrete type emitted by multiple crates.  A
 /// dependency may register (for example) `u64` and the final binary may also
 /// discover/register it.  The formatter functions are interchangeable only
-/// when the ABI-relevant shape agrees; a same-name, different-shape collision
-/// remains an error instead of being selected by link order.
+/// when their lifetime-erased concrete TypeIds agree. Names and layout alone
+/// never prove this: different dependency versions can share both.
 fn coalesce_roots(roots: &mut Vec<Root>) {
     // Link order is unspecified.  Sort the anchor as a deterministic tie-break
     // before choosing the retained metadata and default mode.
     roots.sort_by_key(|root| (root.name, root.entry.anchor.as_str()));
+    let mut markers = std::collections::HashMap::new();
+    for root in roots.iter() {
+        if let Some(identity) = markers.insert(root.key, root.identity) {
+            assert_eq!(
+                identity, root.identity,
+                "dbgvis: duplicate root registration marker"
+            );
+        }
+    }
     let mut merged: Vec<Root> = Vec::with_capacity(roots.len());
     for root in roots.drain(..) {
         if let Some(previous) = merged.last_mut()
             && previous.name == root.name
         {
+            assert_eq!(
+                previous.identity, root.identity,
+                "dbgvis: same type name has different concrete type identities"
+            );
             assert_eq!(
                 (previous.entry.size, previous.entry.align),
                 (root.entry.size, root.entry.align),
@@ -133,13 +147,6 @@ fn coalesce_roots(roots: &mut Vec<Root>) {
         }
         merged.push(root);
     }
-    let mut keys = std::collections::HashSet::new();
-    for root in &merged {
-        assert!(
-            keys.insert(root.key),
-            "dbgvis: duplicate root registration marker"
-        );
-    }
     *roots = merged;
 }
 pub struct Registration<T> {
@@ -147,10 +154,29 @@ pub struct Registration<T> {
     invariant: PhantomData<fn(T) -> T>,
 }
 impl<T> Registration<T> {
-    pub fn new<Marker: 'static>(anchor: &'static str) -> Self {
+    pub fn new<Marker: 'static>(anchor: &'static str) -> Self
+    where
+        T: 'static,
+    {
+        // SAFETY: the identity type is exactly T.
+        unsafe { Self::new_lifetime_erased::<T, Marker>(anchor) }
+    }
+
+    /// Construct a registration for a lifetime-generic formatter.
+    ///
+    /// # Safety
+    /// Identity must be exactly T with its free lifetimes replaced by 'static;
+    /// no type/const arguments or nominal type identity may change. This identity
+    /// permits merging function pointers from other registrations. It does not
+    /// extend the lifetime of any value. Prefer the registration macros.
+    #[doc(hidden)]
+    pub unsafe fn new_lifetime_erased<Identity: 'static, Marker: 'static>(
+        anchor: &'static str,
+    ) -> Self {
         Self {
             root: Root {
                 key: TypeId::of::<Marker>(),
+                identity: TypeId::of::<Identity>(),
                 name: std::any::type_name::<T>(),
                 entry: Entry {
                     name: Text::new(std::any::type_name::<T>()),

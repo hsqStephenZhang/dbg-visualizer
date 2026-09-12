@@ -202,9 +202,9 @@ fn render<'tcx>(
                         .try_to_target_usize(tcx)
                         .ok_or("unsupported const argument")?
                         .to_string(),
-                    // One synthetic lifetime is enough for a registration alias;
-                    // the register proc-macro substitutes it with 'static only in
-                    // the DWARF anchor while retaining the generic formatter.
+                    // Supported borrowed candidates use a synthetic lifetime;
+                    // register substitutes 'static in the anchor/identity type
+                    // while retaining the generic formatter.
                     ty::GenericArgKind::Lifetime(_) => {
                         borrowed = true;
                         "'a".into()

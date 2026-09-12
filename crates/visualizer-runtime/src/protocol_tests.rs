@@ -177,13 +177,71 @@ fn duplicate_same_type_registration_is_coalesced() {
 #[test]
 fn duplicate_type_name_with_different_shape_is_rejected() {
     let mut roots = vec![Registration::<u32>::new::<u32>("anchor").debug().finish()];
-    let mut incompatible = Registration::<u64>::new::<i64>("other").debug().finish();
-    incompatible.name = roots[0].name;
+    let mut incompatible = Registration::<u32>::new::<i64>("other").debug().finish();
+    // Even when identity is correct, inconsistent metadata must be rejected.
+    incompatible.entry.size = 8;
     roots.push(incompatible);
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| coalesce_roots(&mut roots)))
             .is_err()
     );
+}
+
+#[test]
+fn same_name_and_layout_do_not_prove_type_identity() {
+    // Function-local types can have identical type_name output even within one crate.
+    let first = {
+        #[derive(Debug)]
+        struct Same(u32);
+        let value = Same(1);
+        std::hint::black_box(value.0);
+        Registration::<Same>::new::<u32>("a").debug().finish()
+    };
+    let second = {
+        #[derive(Debug)]
+        struct Same(f32);
+        let value = Same(1.0);
+        std::hint::black_box(value.0);
+        Registration::<Same>::new::<f32>("b").debug().finish()
+    };
+    assert_eq!(first.name, second.name);
+    assert_eq!(
+        (first.entry.size, first.entry.align),
+        (second.entry.size, second.entry.align)
+    );
+    assert_ne!(first.identity, second.identity);
+    assert!(std::panic::catch_unwind(|| runtime(vec![first, second])).is_err());
+}
+
+#[test]
+fn borrowed_identity_merges_modes_without_extending_values() {
+    fn roots<'a>(_: &'a str) -> Vec<Root> {
+        // SAFETY: &'static str is exactly &'a str with its lifetime erased.
+        let a = unsafe { Registration::<&'a str>::new_lifetime_erased::<&'static str, u32>("a") };
+        let b = unsafe { Registration::<&'a str>::new_lifetime_erased::<&'static str, u64>("b") };
+        vec![a.debug().finish(), b.display().finish()]
+    }
+    let owned = String::from("borrowed");
+    let value = owned.as_str();
+    let runtime = runtime(roots(value));
+    assert_eq!(runtime.entries.get().unwrap().len(), 1);
+    for (mode, expected) in [(DEBUG, "\"borrowed\""), (DISPLAY, "borrowed")] {
+        let response = unsafe {
+            call(
+                runtime,
+                Request {
+                    object: &value as *const _ as u64,
+                    mode,
+                    ..Request::EMPTY
+                },
+            )
+        };
+        assert_eq!(response.status, Status::Ok as u64);
+        assert_eq!(
+            unsafe { &(&*runtime.output.get())[..response.written as usize] },
+            expected.as_bytes()
+        );
+    }
 }
 
 #[test]

@@ -41,15 +41,15 @@ def main():
         # Apple/MSVC rustc targets never emit `.debug_gdb_scripts`, and GDB cannot ptrace here.
         print("GDB_V2_SUITE_SKIPPED: live GDB auto-load scenarios require Linux", flush=True)
         return
-    run(["cargo", "build", "--offline", "--example", "demo"])
-    run(debugger(ROOT / "target/debug/examples/demo", "gdb_checks.py"), "GDB_V2_INTEGRATION_OK")
+    run(["cargo", "build", "--offline", "--example", "explicit"])
+    run(debugger(ROOT / "target/debug/examples/explicit", "gdb_checks.py"), "GDB_V2_INTEGRATION_OK")
     if options.lto:
-        run(["cargo", "build", "--offline", "--example", "demo", "--profile", "release-lto"])
-        run(debugger(ROOT / "target/release-lto/examples/demo", "gdb_checks.py"), "GDB_V2_INTEGRATION_OK")
+        run(["cargo", "build", "--offline", "--example", "explicit", "--profile", "release-lto"])
+        run(debugger(ROOT / "target/release-lto/examples/explicit", "gdb_checks.py"), "GDB_V2_INTEGRATION_OK")
     if options.relocated:
         with tempfile.TemporaryDirectory(prefix="dbgvis relocated ") as directory:
-            binary = Path(directory) / "demo binary"
-            shutil.copy2(ROOT / "target/debug/examples/demo", binary)
+            binary = Path(directory) / "explicit binary"
+            shutil.copy2(ROOT / "target/debug/examples/explicit", binary)
             run(debugger(binary, "gdb_checks.py"), "GDB_V2_INTEGRATION_OK")
     if options.faults:
         run(["cargo", "build", "--offline", "--example", "faults"])

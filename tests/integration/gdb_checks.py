@@ -6,7 +6,7 @@ import sys
 gdb.execute("set pagination off")
 gdb.execute("set confirm off")
 gdb.execute("set debuginfod enabled off")
-gdb.execute("break demo::checkpoint")
+gdb.execute("break explicit::checkpoint")
 gdb.execute("run")
 gdb.execute("up")
 session = sys.modules["dbgvis_gdb"]._session
@@ -24,6 +24,22 @@ def formatted(expression):
 
 
 assert session.calls == 0
+# Compare exactly the same expression evaluated natively and through dbgvis.
+# Quotes, whitespace, escapes, char literals and negative expressions must survive.
+for expression in ('"hello"', r'"a  b\n\"quoted\"\\tail"', "'x'", "-1", "(point.x +  2)"):
+    expected = session.native(gdb.parse_and_eval(expression))
+    assert command("p -m native -- " + expression) == expected
+    assert command("-p --mode=native " + expression) == expected
+assert session.calls == 0
+assert "--mode MODE" in command("p --help")
+before = session.calls
+for invalid in ("p -m", "p --mode=", "p -m unknown point", "p -b", "p --buffer=", "p --", "p --unknown point"):
+    try:
+        command(invalid)
+        raise AssertionError("invalid options accepted: " + invalid)
+    except gdb.error:
+        pass
+assert session.calls == before
 baseline_map = command("print --mode native map")
 baseline_app = command("print --mode native app")
 assert session.calls == 0
@@ -32,8 +48,8 @@ assert session.calls == 0, "manual view must not call target"
 session.discover()
 assert all(e["type"] is not None for e in session.entries)
 names = {e["name"] for e in session.entries}
-assert 'demo::Counter' in names
-assert not any(name.startswith('demo::State<') for name in names), "nested generic type need not be a registered root"
+assert 'explicit::Counter' in names
+assert not any(name.startswith('explicit::State<') for name in names), "nested generic type need not be a registered root"
 
 assert formatted("map") == '{"points": [Some(Point { x: 1, y: 2 }), None]}'
 assert formatted("custom") == '{(): 42}'
@@ -62,6 +78,9 @@ assert formatted("borrowed_other") == 'Borrowed { label: "临时字符串", valu
 assert "byte limit" in formatted("--buffer 8 map")
 assert formatted("--alternate point") == 'Point {\n  x: 3,\n  y: 7\n}'
 before = session.calls
+assert command("-p -m=auto -b=128 -a point") == 'Point {\n  x: 3,\n  y: 7\n}'
+assert session.calls == before + 1
+before = session.calls
 try:
     command("print --mode display bytes")
     raise AssertionError("unregistered Display was accepted")
@@ -85,7 +104,7 @@ command("config execution automatic")
 before = session.calls
 assert 'Point { x: 3, y: 7 }' in gdb.execute("print point", to_string=True)
 assert session.calls == before + 1
-command('config --type demo::Point summary.alternate true')
+command('config --type explicit::Point summary.alternate true')
 assert 'Point {\n  x: 3,\n  y: 7\n}' in gdb.execute("print point", to_string=True)
 command("reset")
 gdb.execute("set variable point.x = 99")

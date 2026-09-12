@@ -116,10 +116,25 @@ dv::register_type!(Generic<Nested>);
 #[derive(dv::Visualize)] #[dbgvis(no_register)] struct Nested { x: u32 }
 #[dv::main] fn main() { assert!(dv::VIS_TYPES.is_empty()); }
 '''),
-    "duplicate_types_rejected": (True, "", r'''
+    "duplicate_types_coalesced": (True, "", r'''
 mod a { dv::register_type!(u32); }
 mod b { #[dv::register(display)] type Root = u32; }
-fn main() { assert!(std::panic::catch_unwind(|| { dv::enable!(); }).is_err()); }
+fn main() { dv::enable!(); assert_eq!(dv::collected_roots().len(), 1); }
+'''),
+    "duplicate_borrowed_types_coalesced": (True, "", r'''
+mod a { #[dv::register(debug)] type Root<'a> = &'a str; }
+mod b { #[dv::register(display)] type Root<'b> = &'b str; }
+fn main() { dv::enable!(); assert_eq!(dv::collected_roots().len(), 1); }
+'''),
+    "same_name_different_identity_rejected": (True, "", r'''
+fn main() {
+    { #[derive(dv::Visualize)] struct Same(u32); }
+    { #[derive(dv::Visualize)] struct Same(f32); }
+    let error = std::panic::catch_unwind(dv::collected_roots).err().expect("collision accepted");
+    let message = error.downcast_ref::<String>().map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied()).unwrap();
+    assert!(message.contains("different concrete type identities"), "{message}");
+}
 '''),
     "scoped_types": (True, "", r'''
 mod a { #[derive(dv::Visualize)] pub struct Same(u32); }
@@ -267,6 +282,64 @@ fn main() {
     print("NO_DEBUGINFO_DROPS_GDB_SCRIPT_OK")
 
 
+def check_dependency_identity():
+    """Two versions with identical names and layouts must never share formatters."""
+    with tempfile.TemporaryDirectory(prefix="dbgvis identity ") as directory:
+        project = Path(directory).resolve()
+        (project / "src").mkdir()
+        for version in (1, 2):
+            library = project / f"v{version}"
+            library.mkdir()
+            (library / "Cargo.toml").write_text(f'''
+[package]
+name = "identity-library"
+version = "{version}.0.0"
+edition = "2024"
+[lib]
+path = "lib.rs"
+[dependencies]
+dv = {{ package = "dbgvis", path = "{ROOT / 'crates/dbgvis'}", features = ["derive"] }}
+''')
+            (library / "lib.rs").write_text('''
+#[derive(dv::Visualize)]
+pub struct Shared(pub u32);
+''')
+        (project / "Cargo.toml").write_text(f'''
+[package]
+name = "identity-consumer"
+version = "0.0.0"
+edition = "2024"
+[workspace]
+exclude = ["v1", "v2"]
+[dependencies]
+dv = {{ package = "dbgvis", path = "{ROOT / 'crates/dbgvis'}", features = ["derive"] }}
+old = {{ package = "identity-library", path = "v1" }}
+new = {{ package = "identity-library", path = "v2" }}
+[profile.release]
+lto = true
+codegen-units = 1
+''')
+        (project / "src/main.rs").write_text('''
+fn main() {
+    assert_eq!(std::any::type_name::<old::Shared>(), std::any::type_name::<new::Shared>());
+    assert_eq!(size_of::<old::Shared>(), size_of::<new::Shared>());
+    assert_eq!(align_of::<old::Shared>(), align_of::<new::Shared>());
+    assert_ne!(std::any::TypeId::of::<old::Shared>(), std::any::TypeId::of::<new::Shared>());
+    assert_eq!(dv::VIS_TYPES.len(), 2);
+    let error = std::panic::catch_unwind(|| { dv::enable!(); }).err().expect("collision accepted");
+    let message = error.downcast_ref::<String>().map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied()).unwrap();
+    assert!(message.contains("different concrete type identities"), "{message}");
+}
+''')
+        target = ROOT / "target/identity-contracts"
+        for profile, folder in (([], "debug"), (["--release"], "release")):
+            subprocess.run(["cargo", "+nightly", "build", "--offline", *profile, "--target-dir", target],
+                           cwd=project, check=True, timeout=120)
+            subprocess.run([target / folder / "identity-consumer"], check=True, timeout=10)
+    print("CROSS_VERSION_IDENTITY_REJECTED_OK", flush=True)
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="dbgvis consumer ") as directory:
         project = Path(directory).resolve()  # cargo canonicalizes path deps (macOS /var symlink)
@@ -294,6 +367,7 @@ dv = {{ package = "dbgvis", path = "{ROOT / 'crates/dbgvis'}", features = ["deri
                     subprocess.run([binary], check=True, timeout=10)
             print(name + ": OK", flush=True)
         check_features(project)
+    check_dependency_identity()
     print("COMPILER_CONTRACTS_OK")
 
 

@@ -398,7 +398,7 @@ fn emit_registration(
     let marker = format_ident!("__DbgMarker{ident}");
     let factory = format_ident!("__dbgvis_entry_{ident}");
     let element = format_ident!("__DBG_REGISTRATION_{ident}");
-    // Substitute only declared lifetime parameters in the DWARF-only anchor.
+    // Substitute only declared lifetime parameters in the anchor/identity type.
     // The formatter factory below retains the original generic lifetimes.
     struct StaticLifetimes(Vec<syn::Lifetime>);
     impl syn::visit_mut::VisitMut for StaticLifetimes {
@@ -426,7 +426,9 @@ fn emit_registration(
             ::std::hint::black_box(&#anchor);
             // type_name includes function-local scopes, unlike module_path!().
             let anchor = ::std::any::type_name::<#anchor_type>().strip_suffix("Type").unwrap();
-            #path::Registration::<#ty>::new::<#marker>(anchor)
+            // SAFETY: anchor_ty is the same concrete type with only the declared
+            // free lifetimes replaced by 'static. The formatter retains them.
+            unsafe { #path::Registration::<#ty>::new_lifetime_erased::<#anchor_ty, #marker>(anchor) }
                 #(.#calls())*.default_mode(#path::#default).finish()
         }
         #(#cfg)*

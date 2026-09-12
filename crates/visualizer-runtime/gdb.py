@@ -1,5 +1,6 @@
 """GDB-only v2 bridge. Packaged with dbgvis; no source-tree imports or target layouts."""
 import gdb
+import io
 import json
 import math
 import os
@@ -26,6 +27,63 @@ COMMAND_ALIASES = {
     "rs": "reset",
     "-rs": "reset",
 }
+
+HELP = """dbgvis print|p|-p [OPTIONS] [--] EXPR
+  -m, --mode MODE     auto|visualize|debug|display|native
+  -b, --buffer BYTES  output buffer size (also --buffer=BYTES / -b=BYTES)
+  -a, --alternate     alternate formatting
+  Options precede EXPR; expression quotes and escapes are passed unchanged to GDB.
+dbgvis config|c|-c [-t NAME | --type NAME] KEY VALUE
+dbgvis types|t|-t | status|s|-s | refresh|rf|-rf | reset|rs|-rs
+dbgvis help|h|-h|--help"""
+
+
+def take_option_word(text):
+    """Decode one shell-style option value, leaving the expression tail untouched."""
+    stream = io.StringIO(text.lstrip())
+    lexer = shlex.shlex(stream, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    word = lexer.get_token()
+    if word is None:
+        raise RuntimeError("unknown or incomplete print option")
+    return word, stream.read()
+
+
+def print_arguments(text):
+    overrides = {}
+    while text.strip():
+        text = text.lstrip()
+        head = text.split(None, 1)[0]
+        if head == "--":
+            text = text[2:].lstrip()
+            break
+        option = head.split("=", 1)[0]
+        if option not in ("--mode", "-m", "--buffer", "-b", "--alternate", "-a"):
+            if head.startswith("--"):
+                raise RuntimeError("unknown print option: " + head)
+            break
+        if option in ("--alternate", "-a"):
+            if "=" in head:
+                raise RuntimeError("alternate takes no value")
+            overrides["summary.alternate"] = True
+            text = text[len(head):]
+            continue
+        text = text[len(option):]
+        if text.startswith("="):
+            text = text[1:]
+            if not text or text[0].isspace():
+                raise RuntimeError("unknown or incomplete print option")
+        value, text = take_option_word(text)
+        if option in ("--mode", "-m"):
+            if value not in {"native", *MODES}:
+                raise RuntimeError("invalid mode")
+            overrides["summary.mode"] = value
+        else:
+            overrides["summary.buffer_bytes"] = int(value)
+    if not text.strip():
+        raise RuntimeError("missing variable expression")
+    return overrides, text
 
 
 class NoMatch(Exception):
@@ -304,13 +362,24 @@ class Session:
             return None
 
     def command(self, argument):
-        args = shlex.split(argument)
-        if not args or args[0] in ("help", "h", "-h", "--help"):
-            return ("dbgvis print|-p [-m MODE] [-b BYTES] [-a] EXPR\n"
-                    "dbgvis config|-c [-t NAME] KEY VALUE\n"
-                    "dbgvis types|-t | status|-s | refresh|-rf | reset|-rs")
-        command = args.pop(0)
+        parts = argument.lstrip().split(None, 1)
+        if not parts or parts[0] in ("help", "h", "-h", "--help"):
+            return HELP
+        command = parts[0]
         command = COMMAND_ALIASES.get(command, command)
+        remainder = parts[1] if len(parts) == 2 else ""
+        if command == "print":
+            if remainder.strip() in ("-h", "--help"):
+                return HELP
+            overrides, expression = print_arguments(remainder)
+            value = gdb.parse_and_eval(expression)
+            if overrides.get("summary.mode") == "native":
+                return self.native(value)
+            entry = self.match(value)
+            if self.options(entry, overrides)["summary.mode"] == "native":
+                overrides["summary.mode"] = "auto"
+            return self.summary(value, overrides)
+        args = shlex.split(remainder)
         if command == "reset":
             self.config = dict(DEFAULTS)
             self.overrides.clear()
@@ -354,43 +423,6 @@ class Session:
                     raise RuntimeError("configuration out of range")
             target[key] = value
             return f"{key}={value}"
-        if command == "print":
-            overrides = {}
-            while args and (args[0].startswith("--") or args[0] in ("-a", "-m", "-b")
-                            or args[0].startswith(("-m=", "-b="))):
-                flag = args.pop(0)
-                if flag in ("--alternate", "-a"):
-                    overrides["summary.alternate"] = True
-                elif (flag in ("--mode", "-m", "--buffer", "-b")
-                      or flag.startswith(("--mode=", "--buffer=", "-m=", "-b="))):
-                    if "=" in flag:
-                        option, value = flag.split("=", 1)
-                        option = {"--mode": "--mode", "--buffer": "--buffer",
-                                  "-m": "-m", "-b": "-b"}.get(option, option)
-                    else:
-                        option = flag
-                        if not args:
-                            raise RuntimeError("unknown or incomplete print option")
-                        value = args.pop(0)
-                    if option in ("--mode", "-m"):
-                        if value not in {"native", *MODES}:
-                            raise RuntimeError("invalid mode")
-                        overrides["summary.mode"] = value
-                    elif option in ("--buffer", "-b"):
-                        overrides["summary.buffer_bytes"] = int(value)
-                    else:
-                        raise RuntimeError("unknown or incomplete print option")
-                else:
-                    raise RuntimeError("unknown or incomplete print option")
-            if not args:
-                raise RuntimeError("missing variable expression")
-            value = gdb.parse_and_eval(" ".join(args))
-            if overrides.get("summary.mode") == "native":
-                return self.native(value)
-            entry = self.match(value)
-            if self.options(entry, overrides)["summary.mode"] == "native":
-                overrides["summary.mode"] = "auto"
-            return self.summary(value, overrides)
         raise RuntimeError("unknown command; use dbgvis help")
 
 
