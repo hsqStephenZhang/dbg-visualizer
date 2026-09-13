@@ -262,6 +262,7 @@ dv = {{ package = "dbgvis", path = "{facade}", features = ["derive"] }}
     println!("AUTO_CROSS_CRATE_DEDUP_OK");
     drop(scratch);
     same_name_lib_and_bin()?;
+    dependency_reexports()?;
     println!("AUTO_COMPILER_CONTRACTS_OK");
     Ok(())
 }
@@ -382,6 +383,79 @@ fn main() {
     }
     println!("AUTO_LIB_AND_BIN_OK");
     println!("AUTO_SCAN_MODE_INVALIDATION_OK");
+    Ok(())
+}
+
+fn dependency_reexports() -> Result {
+    let scratch = TempDir::new("dbgvis auto reexports ")?;
+    let project = scratch.path();
+    let facade = root().join("crates/dbgvis").display().to_string();
+    write(
+        project.join("Cargo.toml"),
+        &format!(
+            r#"
+[package]
+name = "scan_reexports"
+version = "0.0.0"
+edition = "2024"
+[workspace]
+exclude = ["foreign"]
+[dependencies]
+dv = {{ package = "dbgvis", path = "{facade}", features = ["derive"] }}
+foreign = {{ path = "foreign" }}
+"#
+        ),
+    )?;
+    write(
+        project.join("foreign/Cargo.toml"),
+        "[package]\nname = \"foreign\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+    )?;
+    for (path, source) in [
+        ("src/main.rs", "reexport_main.rs"),
+        ("src/lib.rs", "reexport_lib.rs"),
+        ("foreign/src/lib.rs", "reexport_foreign.rs"),
+    ] {
+        write(project.join(path), &fixture(source)?)?;
+    }
+    let target = root().join("target/auto-register/reexports");
+    let output = environment(
+        Run::new("cargo")
+            .args(["build", "--offline"])
+            .cwd(project)
+            .env("DBGVIS_SCAN_DEPS", "1")
+            .timeout(600),
+        "scan_reexports",
+        &target,
+    )
+    .output()?;
+    let (_, generated, report) = plan(&output)?;
+    for expected in [
+        "SelectedFunctionLocal",
+        "SelectedMethodLocal",
+        "ForeignUsed",
+    ] {
+        ensure!(
+            generated.contains(expected),
+            "lost {expected}\n{generated}\n{report}"
+        );
+    }
+    for excluded in [
+        "ForeignFunctionLocal",
+        "ForeignStructLocal",
+        "ForeignEnumLocal",
+        "ForeignUnionLocal",
+        "ForeignModuleLocal",
+    ] {
+        ensure!(
+            !report.contains(excluded) && !generated.contains(excluded),
+            "re-export escaped the selected crates: {excluded}\n{generated}\n{report}"
+        );
+    }
+    Run::new(target.join("debug/scan_reexports"))
+        .marker("REEXPORTS_EXECUTED")
+        .timeout(30)
+        .check()?;
+    println!("AUTO_DEPENDENCY_REEXPORTS_OK");
     Ok(())
 }
 

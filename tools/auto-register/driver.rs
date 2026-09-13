@@ -156,6 +156,7 @@ fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
     if selected.is_empty() {
         return Vec::new();
     }
+    let is_selected = |did: DefId| selected.contains(tcx.crate_name(did.krate).as_str());
     let mut queue: VecDeque<DefId> = VecDeque::new();
     for &cnum in tcx.crates(()) {
         if selected.contains(tcx.crate_name(cnum).as_str()) {
@@ -174,15 +175,19 @@ fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
         if !visited.insert(module) {
             continue;
         }
-        // Stay inside the selected crates: a `pub use` can re-export another crate's
-        // module, and following it would drag in the whole standard library.
-        if !selected.contains(tcx.crate_name(module.krate).as_str()) {
+        // Re-exports retain the defining crate's DefId. Check both modules and
+        // their children: a selected module may directly re-export a foreign
+        // function/type without an intervening foreign module in the queue.
+        if !is_selected(module) {
             continue;
         }
         for child in tcx.module_children(module) {
             let Res::Def(kind, did) = child.res else {
                 continue;
             };
+            if !is_selected(did) {
+                continue;
+            }
             match kind {
                 DefKind::Mod => queue.push_back(did),
                 DefKind::Fn => result.extend(mono(tcx, did)),
@@ -190,7 +195,7 @@ fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
                 DefKind::Struct | DefKind::Enum | DefKind::Union => {
                     for implementation in tcx.inherent_impls(did) {
                         for assoc in tcx.associated_item_def_ids(*implementation) {
-                            if tcx.def_kind(*assoc) == DefKind::AssocFn {
+                            if is_selected(*assoc) && tcx.def_kind(*assoc) == DefKind::AssocFn {
                                 result.extend(mono(tcx, *assoc));
                             }
                         }
