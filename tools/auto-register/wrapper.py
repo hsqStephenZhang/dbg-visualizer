@@ -60,6 +60,26 @@ def main():
         return subprocess.call([rustc, *args], close_fds=False)
     name = option(args, "--crate-name")
     crate_type = option(args, "--crate-type")
+    # Cargo's compiler probes have no crate name. Do not require the driver or
+    # alter their output; actual workspace compilations use the tracking driver.
+    if not name:
+        return subprocess.call([rustc, *args], close_fds=False)
+    if not DRIVER.exists():
+        sys.exit("Build the experiment first: cargo xtask driver")
+    actual = checked_output([rustc, "--version"])
+    if actual != EXPECTED:
+        sys.exit(f"Unsupported driver toolchain: {actual}; expected {EXPECTED}")
+    # Track these inputs in every compilation, including passthrough libraries.
+    newest = max(p.stat().st_mtime_ns for p in (Path(__file__), Path(__file__).with_name("driver.rs"),
+                                                ROOT / "xtask/src/autoregister.rs"))
+    if DRIVER.stat().st_mtime_ns < newest:
+        sys.exit("Driver is stale; run cargo xtask driver")
+    sysroot = checked_output([rustc, "--print", "sysroot"])
+    args += ["--sysroot", sysroot] if option(args, "--sysroot") is None else []
+    env = os.environ.copy()
+    env.pop("DBGVIS_INJECT", None)
+    env.pop("DBGVIS_PASSTHROUGH", None)
+    env["DBGVIS_TOOL_DIR"] = str(Path(__file__).parent)
     # Scanning dependency crates is opt-in: DBGVIS_SCAN_DEPS=1 also reads the named
     # variables of the workspace libraries. It is off by default because it is not
     # free -- it keeps the libraries' MIR with `-Zalways-encode-mir`, and every local
@@ -89,28 +109,13 @@ def main():
             # reaches a bin target does not just fail silently.
             print(f"dbgvis auto: passing through {selected} (--crate-type {crate_type});"
                   " only the bin/example target is instrumented", file=sys.stderr)
-        return subprocess.call([rustc, *args], close_fds=False)
-    if not DRIVER.exists():
-        sys.exit("Build the experiment first: cargo xtask driver")
-    actual = checked_output([rustc, "--version"])
-    if actual != EXPECTED:
-        sys.exit(f"Unsupported driver toolchain: {actual}; expected {EXPECTED}")
-    # The driver must be newer than every input that defines it: this wrapper, the
-    # driver source, and the xtask gate that pins the toolchain and build flags.
-    newest = max(p.stat().st_mtime_ns for p in (Path(__file__), Path(__file__).with_name("driver.rs"),
-                                                ROOT / "xtask/src/autoregister.rs"))
-    if DRIVER.stat().st_mtime_ns < newest:
-        sys.exit("Driver is stale; run cargo xtask driver")
-    sysroot = checked_output([rustc, "--print", "sysroot"])
-    args += ["--sysroot", sysroot] if option(args, "--sysroot") is None else []
+        env["DBGVIS_PASSTHROUGH"] = "1"
+        return subprocess.call([str(DRIVER), *args], env=env, close_fds=False)
     digest = hashlib.sha256((str(Path.cwd()) + repr(args)).encode()).hexdigest()[:20]
     directory = ROOT / "target/auto-register/plans" / f"{selected}-{digest}"
     directory.mkdir(parents=True, exist_ok=True)
     plan = directory / "register.rs"
-    env = os.environ.copy()
-    env.pop("DBGVIS_INJECT", None)
     env["DBGVIS_PLAN"] = str(plan)
-    env["DBGVIS_TOOL_DIR"] = str(Path(__file__).parent)
     # Names recorded while the workspace libraries were built. A name the executable
     # does not actually link matches no crate and is ignored, so a stale entry left by
     # an earlier session cannot widen the scan.

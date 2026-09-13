@@ -17,7 +17,7 @@ use rustc_infer::infer::TyCtxtInferExt;
 use rustc_interface::interface::Compiler;
 use rustc_middle::mono::MonoItem;
 use rustc_middle::ty::{self, Ty, TyCtxt};
-use rustc_span::FileName;
+use rustc_span::{FileName, Symbol};
 use rustc_trait_selection::infer::InferCtxtExt;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -25,6 +25,38 @@ use std::path::PathBuf;
 struct Driver {
     plan: PathBuf,
     inject: bool,
+}
+
+// Record wrapper inputs even for workspace libraries that only pass through.
+// Cargo must rebuild those libraries to add/remove encoded MIR when the scan
+// mode changes; tracking this solely in the injected executable is too late.
+fn track_wrapper_inputs(config: &mut rustc_interface::interface::Config) {
+    config.track_state = Some(Box::new(|sess| {
+        for key in ["DBGVIS_AUTO_CRATE", "DBGVIS_SCAN_DEPS"] {
+            sess.env_depinfo.borrow_mut().insert((
+                Symbol::intern(key),
+                std::env::var(key).ok().as_deref().map(Symbol::intern),
+            ));
+        }
+        let directory = PathBuf::from(std::env::var_os("DBGVIS_TOOL_DIR").expect("tool directory"));
+        for path in [
+            directory.join("wrapper.py"),
+            directory.join("driver.rs"),
+            directory.join("../../xtask/src/autoregister.rs"),
+        ] {
+            sess.file_depinfo
+                .borrow_mut()
+                .insert(Symbol::intern(path.to_str().expect("UTF-8 tool path")));
+        }
+    }));
+}
+
+struct Passthrough;
+
+impl Callbacks for Passthrough {
+    fn config(&mut self, config: &mut rustc_interface::interface::Config) {
+        track_wrapper_inputs(config);
+    }
 }
 
 fn write_changed(path: &std::path::Path, contents: &str) {
@@ -300,6 +332,10 @@ fn render<'tcx>(
 }
 
 impl Callbacks for Driver {
+    fn config(&mut self, config: &mut rustc_interface::interface::Config) {
+        track_wrapper_inputs(config);
+    }
+
     fn after_crate_root_parsing(
         &mut self,
         compiler: &Compiler,
@@ -418,30 +454,28 @@ impl Callbacks for Driver {
             }
             let body = tcx.instance_mir(instance.def);
             for variable in &body.var_debug_info {
-                    if variable.source_info.span.from_expansion() {
-                        continue;
-                    }
-                    let scope = &body.source_scopes[variable.source_info.scope];
-                    if scope.inlined.is_some() || scope.inlined_parent_scope.is_some() {
-                        continue;
-                    }
-                    let local_ty = if let Some(fragment) = &variable.composite {
-                        fragment.ty
-                    } else {
-                        match &variable.value {
-                            rustc_middle::mir::VarDebugInfoContents::Place(place) => {
-                                place.ty(&body.local_decls, tcx).ty
-                            }
-                            rustc_middle::mir::VarDebugInfoContents::Const(value) => {
-                                value.const_.ty()
-                            }
+                if variable.source_info.span.from_expansion() {
+                    continue;
+                }
+                let scope = &body.source_scopes[variable.source_info.scope];
+                if scope.inlined.is_some() || scope.inlined_parent_scope.is_some() {
+                    continue;
+                }
+                let local_ty = if let Some(fragment) = &variable.composite {
+                    fragment.ty
+                } else {
+                    match &variable.value {
+                        rustc_middle::mir::VarDebugInfoContents::Place(place) => {
+                            place.ty(&body.local_decls, tcx).ty
                         }
-                    };
-                    let t = instance.instantiate_mir_and_normalize_erasing_regions(
-                        tcx,
-                        ty::TypingEnv::fully_monomorphized(),
-                        ty::EarlyBinder::bind(tcx, local_ty),
-                    );
+                        rustc_middle::mir::VarDebugInfoContents::Const(value) => value.const_.ty(),
+                    }
+                };
+                let t = instance.instantiate_mir_and_normalize_erasing_regions(
+                    tcx,
+                    ty::TypingEnv::fully_monomorphized(),
+                    ty::EarlyBinder::bind(tcx, local_ty),
+                );
                 candidates.insert(t);
             }
         }
@@ -511,10 +545,14 @@ impl Callbacks for Driver {
 }
 
 fn main() {
+    let args: Vec<_> = std::env::args().collect();
+    if std::env::var_os("DBGVIS_PASSTHROUGH").is_some() {
+        rustc_driver::run_compiler(&args, &mut Passthrough);
+        return;
+    }
     let plan = std::env::var_os("DBGVIS_PLAN")
         .expect("DBGVIS_PLAN required")
         .into();
     let inject = std::env::var_os("DBGVIS_INJECT").is_some();
-    let args: Vec<_> = std::env::args().collect();
     rustc_driver::run_compiler(&args, &mut Driver { plan, inject });
 }

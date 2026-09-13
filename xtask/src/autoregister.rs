@@ -320,66 +320,68 @@ fn main() {
 "#,
     )?;
     let target = root().join("target/auto-register/both-targets");
-    let output = environment(
-        Run::new("cargo")
-            .args(["build", "--offline"])
-            .cwd(project)
-            .env("DBGVIS_SCAN_DEPS", "1")
-            .timeout(600),
-        "both_targets",
-        &target,
-    )
-    .output()?;
-    ensure!(
-        output.contains("passing through both_targets (--crate-type lib)"),
-        "the library build must be announced and passed through\n{output}"
-    );
-    let (_, generated, report) = plan(&output)?;
-    // The lib is a separate crate: its types reach the plan through the bin's own
-    // locals, not by scanning the library.
-    for needle in [
-        "::both_targets::r#Shared",
-        "r#Vec<::both_targets::r#Shared>",
-    ] {
+    let build = |mode| {
+        environment(
+            Run::new("cargo")
+                .args(["build", "--offline"])
+                .cwd(project)
+                .env("DBGVIS_SCAN_DEPS", mode)
+                .timeout(600),
+            "both_targets",
+            &target,
+        )
+    };
+    let mut previous_invocations = None;
+    // Use one target directory throughout: separate targets hide missing Cargo
+    // invalidation, both when retaining MIR and when removing registrations.
+    for mode in ["0", "1", "0"] {
+        let output = build(mode).output()?;
         ensure!(
-            generated.contains(needle),
-            "plan lacks {needle}\n{generated}\n{report}"
+            output.contains("passing through both_targets (--crate-type lib)"),
+            "the library build must be announced and passed through\n{output}"
         );
+        let (path, generated, report) = plan(&output)?;
+        for needle in [
+            "::both_targets::r#Shared",
+            "r#Vec<::both_targets::r#Shared>",
+        ] {
+            ensure!(
+                generated.contains(needle),
+                "plan lacks {needle}\n{generated}\n{report}"
+            );
+        }
+        ensure!(
+            generated.contains("::both_targets::r#LibOnly") == (mode == "1"),
+            "library-only local must follow DBGVIS_SCAN_DEPS={mode}\n{generated}\n{report}"
+        );
+        let log = path.with_file_name("invocations.log");
+        let mut invocations = read(&log)?;
+        ensure!(
+            previous_invocations.as_ref() != Some(&invocations),
+            "switching scan mode must really invoke the wrapper (not replay stderr)"
+        );
+        let before = modified(&path)?;
+        build(mode).output()?;
+        if read(&log)? != invocations {
+            invocations = read(&log)?;
+            build(mode).output()?;
+        }
+        ensure!(
+            read(&log)? == invocations,
+            "unchanged mode must converge to fresh"
+        );
+        ensure!(
+            modified(&path)? == before,
+            "unchanged mode rewrote the plan"
+        );
+        previous_invocations = Some(invocations);
+        Run::new(target.join("debug/both_targets"))
+            .marker("BOTH_TARGETS_EXECUTED")
+            .timeout(30)
+            .check()?;
     }
-    // Only the dependency scan can see a type that is a named variable solely inside
-    // the library; the executable never binds one.
-    ensure!(
-        generated.contains("::both_targets::r#LibOnly"),
-        "dependency scan lost the library-only local\n{generated}\n{report}"
-    );
-    Run::new(target.join("debug/both_targets"))
-        .marker("BOTH_TARGETS_EXECUTED")
-        .timeout(30)
-        .check()?;
-
-    // The default keeps the scan inside the executable: the library-only local
-    // disappears while the executable's own locals stay. Left unset on purpose --
-    // this is what an ordinary build does.
-    let narrow = root().join("target/auto-register/both-targets-narrow");
-    let output = environment(
-        Run::new("cargo")
-            .args(["build", "--offline"])
-            .cwd(project)
-            .timeout(600),
-        "both_targets",
-        &narrow,
-    )
-    .output()?;
-    let (_, generated, report) = plan(&output)?;
-    ensure!(
-        !generated.contains("LibOnly"),
-        "the default scan must not reach into the library\n{generated}\n{report}"
-    );
-    ensure!(
-        generated.contains("::both_targets::r#Shared"),
-        "the default scan must keep the executable's own locals\n{generated}"
-    );
     println!("AUTO_LIB_AND_BIN_OK");
+    println!("AUTO_SCAN_MODE_INVALIDATION_OK");
     Ok(())
 }
 
