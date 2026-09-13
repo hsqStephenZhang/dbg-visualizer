@@ -11,6 +11,12 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 DRIVER = ROOT / "target/auto-register/driver"
 EXPECTED = "rustc 1.99.0-nightly (12c36e253 2026-08-10)"
+# The driver must be newer than every input that defines it.
+TRACKED = (
+    Path(__file__).resolve(),
+    Path(__file__).resolve().with_name("driver.rs"),
+    ROOT / "xtask/src/autoregister.rs",
+)
 
 
 def checked_output(args):
@@ -48,9 +54,34 @@ def scan_args(args, directory):
     return result + ["--out-dir", str(directory), "--emit=metadata"]
 
 
-def scan_directory(selected):
-    """Where this session records the workspace libraries whose MIR was retained."""
-    return ROOT / "target/auto-register/scan" / selected
+def is_probe(args):
+    """Whether Cargo is only asking rustc about itself rather than compiling."""
+    # The target-info probe does carry a crate name (`--crate-name ___`), so the
+    # presence of a name proves nothing. `--print` is the reliable signal: Cargo
+    # never passes it for a real compilation, and a probe must reach plain rustc
+    # untouched -- otherwise a stale driver fails the build as an unreadable
+    # "failed to run `rustc` to learn about target-specific information".
+    return any(arg == "--print" or arg.startswith("--print=") for arg in args)
+
+
+def scan_directory(args, selected):
+    """Where this build records the workspace libraries whose MIR was retained.
+
+    Inside Cargo's own target directory, never this repository's: `cargo clean`
+    then drops the markers together with the libraries they describe, and two
+    projects that happen to share a `DBGVIS_AUTO_CRATE` value cannot collide --
+    a name recorded by one project must not make the other scan a same-named
+    registry crate. Returns None when the target directory cannot be located,
+    which disables dependency scanning rather than guessing.
+    """
+    out = option(args, "--out-dir")
+    if not out:
+        return None
+    for directory in [Path(out), *Path(out).parents]:
+        # Cargo writes CACHEDIR.TAG at the root of every target directory.
+        if (directory / "CACHEDIR.TAG").exists():
+            return directory / "dbgvis-scan" / selected
+    return None
 
 
 def main():
@@ -60,9 +91,9 @@ def main():
         return subprocess.call([rustc, *args], close_fds=False)
     name = option(args, "--crate-name")
     crate_type = option(args, "--crate-type")
-    # Cargo's compiler probes have no crate name. Do not require the driver or
-    # alter their output; actual workspace compilations use the tracking driver.
-    if not name:
+    # Probes must not require the driver or have their output altered; only actual
+    # workspace compilations go through the tracking driver.
+    if not name or is_probe(args):
         return subprocess.call([rustc, *args], close_fds=False)
     if not DRIVER.exists():
         sys.exit("Build the experiment first: cargo xtask driver")
@@ -70,8 +101,10 @@ def main():
     if actual != EXPECTED:
         sys.exit(f"Unsupported driver toolchain: {actual}; expected {EXPECTED}")
     # Track these inputs in every compilation, including passthrough libraries.
-    newest = max(p.stat().st_mtime_ns for p in (Path(__file__), Path(__file__).with_name("driver.rs"),
-                                                ROOT / "xtask/src/autoregister.rs"))
+    # A vendored wrapper may not ship the whole checkout: skip what is absent
+    # rather than raising a traceback on every rustc invocation.
+    tracked = [p for p in TRACKED if p.exists()]
+    newest = max(p.stat().st_mtime_ns for p in tracked)
     if DRIVER.stat().st_mtime_ns < newest:
         sys.exit("Driver is stale; run cargo xtask driver")
     sysroot = checked_output([rustc, "--print", "sysroot"])
@@ -94,10 +127,10 @@ def main():
         # executable's scan unless the MIR survives; keep it and record the crate name
         # for the driver. Library targets only: build scripts and proc macros are not
         # linked into the executable, so their types can never be registered there.
-        if scan_deps and name and crate_type not in ("bin", "proc-macro"):
-            directory = scan_directory(selected)
-            directory.mkdir(parents=True, exist_ok=True)
-            (directory / name).write_text("")
+        recorded = scan_directory(args, selected) if scan_deps else None
+        if recorded is not None and crate_type not in ("bin", "proc-macro"):
+            recorded.mkdir(parents=True, exist_ok=True)
+            (recorded / name).write_text("")
             if "-Zalways-encode-mir" not in args:
                 args = args + ["-Zalways-encode-mir"]
         if name == selected:
@@ -116,13 +149,17 @@ def main():
     directory.mkdir(parents=True, exist_ok=True)
     plan = directory / "register.rs"
     env["DBGVIS_PLAN"] = str(plan)
-    # Names recorded while the workspace libraries were built. A name the executable
-    # does not actually link matches no crate and is ignored, so a stale entry left by
-    # an earlier session cannot widen the scan.
-    recorded = scan_directory(selected)
+    # Names recorded while this target directory's workspace libraries were built.
+    # A name the executable does not actually link matches no crate and is ignored.
+    recorded = scan_directory(args, selected) if scan_deps else None
     env["DBGVIS_SCAN_CRATES"] = ",".join(
-        sorted(p.name for p in recorded.iterdir()) if scan_deps and recorded.is_dir() else []
+        sorted(p.name for p in recorded.iterdir())
+        if recorded is not None and recorded.is_dir()
+        else []
     )
+    if scan_deps and recorded is None:
+        print("dbgvis auto: cannot locate Cargo's target directory;"
+              " dependency scanning is disabled for this build", file=sys.stderr)
     with (directory / "invocations.log").open("a") as log:
         log.write(f"{time.time_ns()} {os.getpid()}\n")
     print(f"dbgvis auto: scan {selected} -> {plan}", file=sys.stderr)

@@ -106,6 +106,11 @@ impl Run {
         self
     }
 
+    pub fn env_remove<K: AsRef<OsStr>>(mut self, key: K) -> Self {
+        self.command.env_remove(key);
+        self
+    }
+
     /// Expect a non-zero exit instead of success.
     pub fn expect_failure(mut self) -> Self {
         self.expect_success = false;

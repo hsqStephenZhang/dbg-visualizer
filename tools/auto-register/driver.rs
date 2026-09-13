@@ -44,6 +44,10 @@ fn track_wrapper_inputs(config: &mut rustc_interface::interface::Config) {
             directory.join("driver.rs"),
             directory.join("../../xtask/src/autoregister.rs"),
         ] {
+            // A dep-info entry naming a file that does not exist makes Cargo treat
+            // every unit as dirty forever, so a vendored wrapper shipped without the
+            // whole checkout must lose the tracking rather than the caching.
+            let Ok(path) = path.canonicalize() else { continue };
             sess.file_depinfo
                 .borrow_mut()
                 .insert(Symbol::intern(path.to_str().expect("UTF-8 tool path")));
@@ -165,11 +169,35 @@ fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
     }
     let mut result = Vec::new();
     let mut visited = HashSet::new();
-    // Only a function with no generic parameters has a single instantiation the scan
-    // can name; a generic one has no concrete arguments to substitute here.
+    // Only a function needing no type or const arguments has a single instantiation
+    // the scan can name; a generic one has nothing concrete to substitute here.
+    // Lifetimes do not count: `Instance::mono` erases them, and requiring none at all
+    // would drop every method of a type with an early-bound lifetime parameter.
     fn mono<'tcx>(tcx: TyCtxt<'tcx>, did: DefId) -> Option<ty::Instance<'tcx>> {
-        (tcx.generics_of(did).count() == 0 && tcx.is_mir_available(did))
+        (!tcx.generics_of(did).requires_monomorphization(tcx) && tcx.is_mir_available(did))
             .then(|| ty::Instance::mono(tcx, did))
+    }
+    // An impl block's associated items are declared inside it, so they always belong
+    // to the same crate; both call sites already established that crate is selected.
+    fn impl_functions<'tcx>(tcx: TyCtxt<'tcx>, block: DefId) -> Vec<ty::Instance<'tcx>> {
+        tcx.associated_item_def_ids(block)
+            .iter()
+            .filter(|assoc| tcx.def_kind(**assoc) == DefKind::AssocFn)
+            .filter_map(|assoc| mono(tcx, *assoc))
+            .collect()
+    }
+    // Trait implementations are reached per crate, not through the module tree: an
+    // `impl Trait for Type` block is not a module child, and unlike inherent impls it
+    // is not reachable from the implementing type either. Without this, a local in a
+    // `Display`/`Iterator`/custom-trait method is scanned when the code sits in the
+    // executable but silently skipped when the same code sits in a library.
+    for &cnum in tcx.crates(()) {
+        if !selected.contains(tcx.crate_name(cnum).as_str()) {
+            continue;
+        }
+        for implementation in tcx.trait_impls_in_crate(cnum) {
+            result.extend(impl_functions(tcx, *implementation));
+        }
     }
     while let Some(module) = queue.pop_front() {
         if !visited.insert(module) {
@@ -194,11 +222,7 @@ fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
                 // Inherent methods are not module children; reach them through the type.
                 DefKind::Struct | DefKind::Enum | DefKind::Union => {
                     for implementation in tcx.inherent_impls(did) {
-                        for assoc in tcx.associated_item_def_ids(*implementation) {
-                            if is_selected(*assoc) && tcx.def_kind(*assoc) == DefKind::AssocFn {
-                                result.extend(mono(tcx, *assoc));
-                            }
-                        }
+                        result.extend(impl_functions(tcx, *implementation));
                     }
                 }
                 _ => {}

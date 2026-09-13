@@ -348,16 +348,15 @@ fn main() {{
             Run::new("cargo")
                 .args(["build", "--offline", "--bin", "visibility_bin"])
                 .args(flags)
-                // This matrix is about one question: which types can the driver name
-                // from the executable's crate root. Dependency scanning answers a
-                // different one and would pull `src/lib.rs` in, so pin it off rather
-                // than inherit whatever the default happens to be;
-                // `same_name_lib_and_bin` covers that path instead.
-                .env("DBGVIS_SCAN_DEPS", "0")
                 .cwd(project)
                 .timeout(600),
             "visibility_bin",
             &target,
+            // This matrix is about one question: which types can the driver name from
+            // the executable's crate root. Dependency scanning answers a different one
+            // and would pull `src/lib.rs` in, so pin it off rather than inherit
+            // whatever the shell has; `same_name_lib_and_bin` covers that path.
+            Some("0"),
         )
         .output()?;
         let (_, generated, report) = crate::autoregister::plan(&output)?;

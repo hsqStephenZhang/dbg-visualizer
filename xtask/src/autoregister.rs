@@ -17,10 +17,19 @@ pub fn tools() -> PathBuf {
 }
 
 /// Environment for a wrapper-driven cargo build.
-pub fn environment(run: Run, crate_name: &str, target: &Path) -> Run {
-    run.env("RUSTC_WORKSPACE_WRAPPER", tools().join("wrapper.py"))
+///
+/// `scan` pins `DBGVIS_SCAN_DEPS` so a gate never inherits it from the developer's
+/// shell: `None` removes it, which is what an ordinary build sees and what Cargo's
+/// dep-info records differently from an explicit "0".
+pub fn environment(run: Run, crate_name: &str, target: &Path, scan: Option<&str>) -> Run {
+    let run = run
+        .env("RUSTC_WORKSPACE_WRAPPER", tools().join("wrapper.py"))
         .env("DBGVIS_AUTO_CRATE", crate_name)
-        .env("CARGO_TARGET_DIR", target)
+        .env("CARGO_TARGET_DIR", target);
+    match scan {
+        Some(mode) => run.env("DBGVIS_SCAN_DEPS", mode),
+        None => run.env_remove("DBGVIS_SCAN_DEPS"),
+    }
 }
 
 /// Locate the plan the driver wrote, returning (path, generated source, tsv report).
@@ -109,6 +118,7 @@ codegen-units = 1
                 .timeout(600),
             "auto_contract",
             &target,
+            Some("0"),
         )
     };
 
@@ -305,6 +315,26 @@ pub fn inside() -> u8 {
     std::hint::black_box(&hidden);
     hidden.tag
 }
+// A trait implementation is not a module child, and unlike an inherent impl it is
+// not reachable from the implementing type either, so it needs its own enumeration.
+#[derive(Debug)] pub struct TraitLocal { pub tag: u8 }
+pub struct Shown;
+impl std::fmt::Display for Shown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let via_trait = TraitLocal { tag: 4 };
+        std::hint::black_box(&via_trait);
+        f.write_str("shown")
+    }
+}
+// An early-bound lifetime parameter still leaves exactly one instantiation.
+#[derive(Debug)] pub struct BorrowedLocal { pub tag: u8 }
+pub struct Borrowed<'a>(pub &'a str);
+impl<'a> Borrowed<'a> {
+    pub fn peek(&self) {
+        let via_lifetime = BorrowedLocal { tag: 5 };
+        std::hint::black_box(&via_lifetime);
+    }
+}
 "#,
     )?;
     write(
@@ -315,27 +345,32 @@ fn main() {
     let shared = both_targets::make();
     let items = vec![both_targets::make()];
     let tag = both_targets::inside();
-    std::hint::black_box((&shared, &items, &tag));
+    let shown = format!("{}", both_targets::Shown);
+    let text = String::from("borrowed");
+    both_targets::Borrowed(&text).peek();
+    std::hint::black_box((&shared, &items, &tag, &shown));
     println!("BOTH_TARGETS_EXECUTED");
 }
 "#,
     )?;
     let target = root().join("target/auto-register/both-targets");
-    let build = |mode| {
+    let build = |mode: Option<&str>| {
         environment(
             Run::new("cargo")
                 .args(["build", "--offline"])
                 .cwd(project)
-                .env("DBGVIS_SCAN_DEPS", mode)
                 .timeout(600),
             "both_targets",
             &target,
+            mode,
         )
     };
     let mut previous_invocations = None;
     // Use one target directory throughout: separate targets hide missing Cargo
     // invalidation, both when retaining MIR and when removing registrations.
-    for mode in ["0", "1", "0"] {
+    // Unset is what an ordinary build sees, and Cargo's dep-info records it
+    // differently from an explicit "0", so both transitions have to be walked.
+    for mode in [None, Some("1"), Some("0"), None] {
         let output = build(mode).output()?;
         ensure!(
             output.contains("passing through both_targets (--crate-type lib)"),
@@ -351,10 +386,18 @@ fn main() {
                 "plan lacks {needle}\n{generated}\n{report}"
             );
         }
-        ensure!(
-            generated.contains("::both_targets::r#LibOnly") == (mode == "1"),
-            "library-only local must follow DBGVIS_SCAN_DEPS={mode}\n{generated}\n{report}"
-        );
+        for library_only in [
+            "::both_targets::r#LibOnly",
+            // Reached only through the crate's trait implementations.
+            "::both_targets::r#TraitLocal",
+            // Reached only if lifetime parameters do not disqualify an instantiation.
+            "::both_targets::r#BorrowedLocal",
+        ] {
+            ensure!(
+                generated.contains(library_only) == (mode == Some("1")),
+                "{library_only} must follow DBGVIS_SCAN_DEPS={mode:?}\n{generated}\n{report}"
+            );
+        }
         let log = path.with_file_name("invocations.log");
         let mut invocations = read(&log)?;
         ensure!(
@@ -422,10 +465,10 @@ foreign = {{ path = "foreign" }}
         Run::new("cargo")
             .args(["build", "--offline"])
             .cwd(project)
-            .env("DBGVIS_SCAN_DEPS", "1")
             .timeout(600),
         "scan_reexports",
         &target,
+        Some("1"),
     )
     .output()?;
     let (_, generated, report) = plan(&output)?;
@@ -491,6 +534,7 @@ pub fn run(gdb: bool) -> Result {
                     .timeout(600),
                 example,
                 &target,
+                Some("0"),
             )
             .check()?;
             let binary = target.join(folder).join("examples").join(example);
