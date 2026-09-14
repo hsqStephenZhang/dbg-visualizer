@@ -56,6 +56,14 @@ pub const fn supported<T: ?Sized>() -> bool {
     <T as VisualizeDispatch>::SUPPORTED
 }
 pub fn render<T: ?Sized>(value: &T, out: &mut Formatter<'_>) -> Result {
-    const { crate::validate::<T>() };
+    // Automatic selection never fails compilation. A value whose type has none of the
+    // three capabilities renders as a placeholder, so a library container that happens
+    // to hold such elements stays debuggable instead of failing the consumer's build.
+    // Explicit declarations -- `via`, root modes, and a root type with no capability at
+    // all (`Registration::auto`) -- keep their compile-time checks. `SUPPORTED` is a
+    // constant, so the branch folds away.
+    if !<T as VisualizeDispatch>::SUPPORTED {
+        return out.unsupported(std::any::type_name::<T>());
+    }
     value.render(out)
 }

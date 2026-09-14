@@ -217,3 +217,39 @@ fn no_lower_priority_retry_and_ignored_write_error_stays_truncated() {
         Outcome::Bytes
     );
 }
+
+mod unformattable {
+    struct NoTraits;
+    #[derive(dbgvis::Visualize)]
+    #[dbgvis(no_register)]
+    struct Holder {
+        inner: NoTraits,
+        fine: u8,
+    }
+
+    fn text<T>(value: &T) -> String {
+        let mut buffer = [0; 256];
+        dbgvis::format_into(value, &mut buffer, Default::default())
+            .text
+            .to_owned()
+    }
+
+    /// Automatic selection must never turn a missing capability into a compile error:
+    /// the value renders as a placeholder and everything around it stays intact.
+    #[test]
+    fn values_without_any_capability_render_as_placeholders() {
+        let placeholder = format!("<unformattable {}>", std::any::type_name::<NoTraits>());
+        assert_eq!(
+            text(&vec![NoTraits, NoTraits]),
+            format!("[{placeholder}, {placeholder}]")
+        );
+        assert_eq!(
+            text(&Holder {
+                inner: NoTraits,
+                fine: 7
+            }),
+            format!("Holder {{ inner: {placeholder}, fine: 7 }}")
+        );
+        assert_eq!(text(&Some(NoTraits)), format!("Some({placeholder})"));
+    }
+}

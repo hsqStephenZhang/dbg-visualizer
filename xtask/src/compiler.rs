@@ -1,7 +1,7 @@
 //! Offline consumer compile contracts.
 //!
-//! Port of the former `tests/compiler/run.py`. Negative auto cases need codegen,
-//! not `cargo check`, so every case is built in both debug and release.
+//! Port of the former `tests/compiler/run.py`. Every case is built in both debug and
+//! release; the successful ones also run, and several assert their formatted text.
 //! Case sources live in `tests/cases/` as real `.rs` files.
 
 use crate::harness::{Failure, Result, Run, TempDir, root, write};
@@ -19,9 +19,9 @@ struct Case {
 #[rustfmt::skip]
 const CASES: &[Case] = &[
     Case { name: "alias_generic", succeeds: true, diagnostic: "" },
-    Case { name: "missing_field", succeeds: false, diagnostic: "no Visualize, Debug or Display" },
-    Case { name: "missing_empty_vec", succeeds: false, diagnostic: "no Visualize, Debug or Display" },
-    Case { name: "missing_nested_map", succeeds: false, diagnostic: "no Visualize, Debug or Display" },
+    Case { name: "unformattable_generic_field", succeeds: true, diagnostic: "" },
+    Case { name: "unformattable_vec_element", succeeds: true, diagnostic: "" },
+    Case { name: "unformattable_nested_map", succeeds: true, diagnostic: "" },
     Case { name: "explicit_display", succeeds: false, diagnostic: "Display" },
     Case { name: "explicit_debug", succeeds: false, diagnostic: "Debug" },
     Case { name: "missing_root", succeeds: false, diagnostic: "Display" },
@@ -35,7 +35,7 @@ const CASES: &[Case] = &[
     Case { name: "duplicate_borrowed_types_coalesced", succeeds: true, diagnostic: "" },
     Case { name: "same_name_different_identity_rejected", succeeds: true, diagnostic: "" },
     Case { name: "scoped_types", succeeds: true, diagnostic: "" },
-    Case { name: "auto_missing_concrete", succeeds: false, diagnostic: "no Visualize, Debug or Display" },
+    Case { name: "unformattable_derive_field", succeeds: true, diagnostic: "" },
     Case { name: "generic_attribute_rejected", succeeds: false, diagnostic: "concrete type/const" },
     Case { name: "duplicate_default", succeeds: false, diagnostic: "duplicate default" },
 ];

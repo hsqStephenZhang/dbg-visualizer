@@ -127,6 +127,11 @@ impl<'a> Formatter<'a> {
     pub fn visual<T: Visualize + ?Sized>(&mut self, value: &T) -> Result {
         self.node(value, |v, out| v.visualize(out))
     }
+    /// Placeholder for a value whose type has no Visualize, Debug or Display.
+    /// Automatic selection degrades to this rather than failing compilation.
+    pub(crate) fn unsupported(&mut self, type_name: &str) -> Result {
+        write!(self, "<unformattable {type_name}>")
+    }
     pub(crate) fn debug_leaf<T: Debug + ?Sized>(&mut self, value: &T) -> Result {
         if self.options.alternate {
             write!(self, "{value:#?}")

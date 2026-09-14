@@ -47,7 +47,7 @@ DBGVIS_AUTO_CRATE=demo RUSTC_WORKSPACE_WRAPPER="$PWD/tools/auto-register/wrapper
 rust-gdb -iex "add-auto-load-safe-path /absolute/path/dbg-visualizer/target/auto-register/examples/debug/examples/demo" target/auto-register/examples/debug/examples/demo
 ```
 
-断点为 `demo::checkpoint`，`run`、`up` 后用 `dbgvis p map` 或 `dbgvis p index_borrowed`。普通 `cargo build --example demo` 不启用 driver，不能据此期待这些根已登记。driver 默认只扫可执行目标自身；对「逻辑在 lib、main 只是入口」的布局，需要 `DBGVIS_SCAN_DEPS=1` 才能扫到库里的局部变量，代价是给 workspace 库加 `-Zalways-encode-mir` 且 strict 失败面变大。细节见[两阶段自动注册实验](docs/自动注册可行性验证.md)。`dbgvis p -m native "hello"` 保留表达式引号；`--` 可结束打印选项。完整命令见 `dbgvis help`。
+断点为 `demo::checkpoint`，`run`、`up` 后用 `dbgvis p map` 或 `dbgvis p index_borrowed`。普通 `cargo build --example demo` 不启用 driver，不能据此期待这些根已登记。driver 默认只扫可执行目标自身；对「逻辑在 lib、main 只是入口」的布局，需要 `DBGVIS_SCAN_DEPS=1` 才能扫到库里的局部变量，代价是给 workspace 库加 `-Zalways-encode-mir` 并增加登记数量。细节见[两阶段自动注册实验](docs/自动注册可行性验证.md)。`dbgvis p -m native "hello"` 保留表达式引号；`--` 可结束打印选项。完整命令见 `dbgvis help`。
 
 ## 文档
 
@@ -69,6 +69,6 @@ cargo xtask integration --faults --lto --relocated
 cargo xtask autoregister --gdb
 ```
 
-当前验证环境为 Linux x86_64、GDB 17.1、rustc 1.99.0-nightly (12c36e253 2026-08-10)。集成测试需要本地 ptrace 权限；在 macOS 等非 Linux 平台上该套件直接跳过（Apple/MSVC 目标不生成 `.debug_gdb_scripts`），其余四步照常运行。调试构建必须保留 `debug = 2` 且不 strip，否则嵌入脚本与 anchor 类型信息都会消失。缺少全部格式化能力的自动分派实例需 `cargo build` 才保证诊断，不能仅依赖 `cargo check`。
+当前验证环境为 Linux x86_64、GDB 17.1、rustc 1.99.0-nightly (12c36e253 2026-08-10)。集成测试需要本地 ptrace 权限；在 macOS 等非 Linux 平台上该套件直接跳过（Apple/MSVC 目标不生成 `.debug_gdb_scripts`），其余四步照常运行。调试构建必须保留 `debug = 2` 且不 strip，否则嵌入脚本与 anchor 类型信息都会消失。自动分派遇到三者皆无的值输出 `<unformattable 类型名>` 占位而不是编译失败；显式 `via`/根模式仍在编译期检查。
 
 有界缓冲区不保证用户 fmt 纯、无分配或不阻塞。core dump 和无法可靠定位的值只能走 native。核心已经实现；`cargo-dbgvis setup/doctor/uninstall` 与完整发布演练尚未实现，crate 尚未发布。

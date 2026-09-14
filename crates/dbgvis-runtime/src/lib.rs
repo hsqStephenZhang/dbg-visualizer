@@ -26,7 +26,8 @@ pub trait Visualize {
     fn visualize(&self, out: &mut Formatter<'_>) -> Result;
 }
 
-/// Validate at monomorphization time (cargo build, not metadata-only check).
+/// Reject a root type with no capability at all, at monomorphization time. Nested
+/// values are never rejected: automatic selection renders them as a placeholder.
 #[doc(hidden)]
 pub const fn validate<T: ?Sized>() {
     assert!(

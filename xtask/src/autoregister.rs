@@ -203,8 +203,11 @@ codegen-units = 1
         "source changes must invalidate the discovery plan"
     );
 
-    // Baseline builds, automatic strict registration fails during monomorphization.
-    write(&source, &fixture("negative.rs")?)?;
+    // A container whose element has no formatting capability used to fail the second
+    // pass at monomorphization. Automatic selection now renders such values as a
+    // placeholder, so the generated registration for `Vec<NoFormat>` must compile and
+    // the binary must show the placeholder.
+    write(&source, &fixture("unformattable.rs")?)?;
     let baseline = || {
         Run::new("cargo")
             .args(["build", "--offline"])
@@ -214,26 +217,28 @@ codegen-units = 1
     };
     baseline().check()?;
     Run::new(target.join("debug/auto_contract"))
+        .marker("PLACEHOLDER_EXECUTED")
         .timeout(30)
         .check()?;
-    let output = build(&[])
-        .expect_failure()
-        .marker("no Visualize, Debug or Display implementation")
-        .output()?;
+    let output = build(&[]).output()?;
     ensure!(
         output.contains("dbgvis auto: compile"),
-        "scan succeeds; generated entry causes failure"
+        "scan and second pass must both run\n{output}"
     );
     let generated = plan(&output)?.1;
     ensure!(
         generated.contains("Vec<crate::r#NoFormat>"),
-        "plan lost the failing entry\n{generated}"
+        "the container must still register\n{generated}"
     );
     ensure!(
         !generated.contains("Vec<u128>"),
         "old generated entries must not feed back into scanning"
     );
-    println!("AUTO_STRICT_FAILURE_CONFIRMED");
+    Run::new(target.join("debug/auto_contract"))
+        .marker("PLACEHOLDER_EXECUTED")
+        .timeout(30)
+        .check()?;
+    println!("AUTO_UNFORMATTABLE_ELEMENT_OK");
 
     // Known boundary: an upstream root is not visible in the local-anchor scan.
     let library = project.join("upstream");

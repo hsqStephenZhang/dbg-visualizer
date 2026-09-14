@@ -204,7 +204,7 @@ def main():
             if "=" in line:
                 args = args + ["--extern", line]
     env["DBGVIS_INJECT"] = "1"
-    print(f"dbgvis auto: compile {selected} with generated registrations (strict)", file=sys.stderr)
+    print(f"dbgvis auto: compile {selected} with generated registrations", file=sys.stderr)
     return subprocess.call([str(DRIVER), *args], env=env, close_fds=False)
 
 
