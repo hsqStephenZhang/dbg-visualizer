@@ -52,10 +52,9 @@ rust-gdb -iex "add-auto-load-safe-path /absolute/path/dbg-visualizer/target/auto
 ## 文档
 
 - [使用指南](docs/使用指南.md)：接入 API、feature 开关、GDB 命令与安全边界。
-- [实现计划](docs/实现计划.md)：已批准路线及安装分发等后续任务。
 - [协议 v2](docs/协议-v2.md)：注册、mailbox 与有界文本。
 - [第二阶段验收记录](docs/第二阶段验收记录.md)：实际测试、已知限制和未完成项。
-- [Q0 技术验证](docs/Q0技术验证.md)：为何采用 nightly；第一阶段文档只作归档。
+- [Q0 技术验证](docs/archive/Q0技术验证.md)：为何采用 nightly（归档，工具链决策已定）。
 - [两阶段自动注册实验](docs/自动注册可行性验证.md)：无需逐类型手写登记的 driver 原型、验证方法与已知限制（可选，不改变默认构建）。
 
 ## 验证
