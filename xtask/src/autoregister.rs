@@ -275,6 +275,7 @@ dv = {{ package = "dbgvis", path = "{facade}", features = ["derive"] }}
     drop(scratch);
     same_name_lib_and_bin()?;
     dependency_reexports()?;
+    indirect_dependency()?;
     println!("AUTO_COMPILER_CONTRACTS_OK");
     Ok(())
 }
@@ -538,6 +539,106 @@ foreign = {{ path = "foreign" }}
         .timeout(30)
         .check()?;
     println!("AUTO_DEPENDENCY_REEXPORTS_OK");
+    Ok(())
+}
+
+/// A crate the executable reaches only through another dependency has no `--extern`
+/// of its own, so nothing in it is nameable from the executable's root -- pulling
+/// `regex_automata` in through `regex` scanned 170 MIR-bearing types and registered
+/// none. The driver must list such a crate with its rlib and the wrapper must pass it
+/// as an extra `--extern` when compiling the registrations. `leaf` keeps its MIR
+/// through the documented per-package `profile-rustflags` recipe, not the wrapper.
+fn indirect_dependency() -> Result {
+    let scratch = TempDir::new("dbgvis indirect ")?;
+    let project = scratch.path();
+    let facade = root().join("crates/dbgvis").display().to_string();
+    write(
+        project.join("Cargo.toml"),
+        &format!(
+            r#"cargo-features = ["profile-rustflags"]
+[package]
+name = "indirect_app"
+version = "0.0.0"
+edition = "2024"
+[workspace]
+exclude = ["mid", "leaf"]
+[dependencies]
+dv = {{ package = "dbgvis", path = "{facade}", features = ["derive"] }}
+mid = {{ path = "mid" }}
+[profile.dev.package.leaf]
+rustflags = ["-Zalways-encode-mir"]
+"#
+        ),
+    )?;
+    write(
+        project.join("mid/Cargo.toml"),
+        "[package]\nname = \"mid\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nleaf = { path = \"../leaf\" }\n",
+    )?;
+    write(
+        project.join("mid/src/lib.rs"),
+        "pub fn run() -> u8 { leaf::work() }\n",
+    )?;
+    write(
+        project.join("leaf/Cargo.toml"),
+        "[package]\nname = \"leaf\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+    )?;
+    write(
+        project.join("leaf/src/lib.rs"),
+        r#"
+#[derive(Debug)] pub struct LeafLocal { pub tag: u8 }
+pub fn work() -> u8 {
+    let deep = LeafLocal { tag: 9 };
+    std::hint::black_box(&deep);
+    deep.tag
+}
+"#,
+    )?;
+    write(
+        project.join("src/main.rs"),
+        r#"
+fn main() {
+    dv::enable!();
+    let tag = mid::run();
+    std::hint::black_box(&tag);
+    println!("INDIRECT_EXECUTED");
+}
+"#,
+    )?;
+    let target = root().join("target/auto-register/indirect");
+    let output = environment(
+        Run::new("cargo")
+            .args(["build", "--offline"])
+            .cwd(project)
+            .timeout(600),
+        "indirect_app",
+        &target,
+        None,
+    )
+    .env("DBGVIS_SCAN_CRATES", "leaf")
+    .output()?;
+    ensure!(
+        output.contains("exposing indirect dependency `leaf` via --extern"),
+        "the indirect crate must be announced\n{output}"
+    );
+    let (path, generated, report) = plan(&output)?;
+    ensure!(
+        generated.contains("::leaf::r#LeafLocal"),
+        "the indirect crate's local must register under its own name\n{generated}\n{report}"
+    );
+    ensure!(
+        !report.contains("LeafLocal\t") || !report.contains("not accessible"),
+        "LeafLocal must not be reported unnameable\n{report}"
+    );
+    let externs = read(&path.with_extension("externs"))?;
+    ensure!(
+        externs.starts_with("leaf=") && externs.trim_end().ends_with(".rlib"),
+        "the externs file must map leaf to its rlib\n{externs}"
+    );
+    Run::new(target.join("debug/indirect_app"))
+        .marker("INDIRECT_EXECUTED")
+        .timeout(30)
+        .check()?;
+    println!("AUTO_INDIRECT_DEPENDENCY_OK");
     Ok(())
 }
 

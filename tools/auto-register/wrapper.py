@@ -195,6 +195,14 @@ def main():
         code = subprocess.call([str(DRIVER), *scan_args(args, Path(scan))], env=env, close_fds=False)
     if code:
         return code
+    # Indirect dependencies the scan selected are not in the executable's extern
+    # prelude; the driver listed them with their rlibs so the generated `::name::...`
+    # paths resolve. They are linked already -- this only names them.
+    externs = plan.with_suffix(".externs")
+    if externs.exists():
+        for line in externs.read_text().splitlines():
+            if "=" in line:
+                args = args + ["--extern", line]
     env["DBGVIS_INJECT"] = "1"
     print(f"dbgvis auto: compile {selected} with generated registrations (strict)", file=sys.stderr)
     return subprocess.call([str(DRIVER), *args], env=env, close_fds=False)

@@ -77,12 +77,11 @@ fn write_changed(path: &std::path::Path, contents: &str) {
     }
 }
 
-// Resolve actual publicly exported paths, not diagnostic type-name strings.
-fn paths(tcx: TyCtxt<'_>) -> HashMap<DefId, String> {
-    // Visit external crates before the local root.  A local `use dbgvis::Visualize`
-    // re-export otherwise wins the map entry and produces `crate::register_type!`
-    // instead of the actual facade path.
-    let mut queue = VecDeque::new();
+/// Crates the executable names directly, as `(crate, "::alias")` for every `--extern`
+/// alias that resolves to them. Only these -- and the standard library -- are in the
+/// executable's extern prelude, so only their items can be spelled from its root.
+fn direct_externs(tcx: TyCtxt<'_>) -> Vec<(CrateNum, String)> {
+    let mut result = Vec::new();
     for &cnum in tcx.crates(()) {
         let source = tcx.used_crate_source(cnum);
         for (alias, entry) in tcx.sess.opts.externs.iter() {
@@ -108,9 +107,26 @@ fn paths(tcx: TyCtxt<'_>) -> HashMap<DefId, String> {
                         )
                 })
             }) {
-                queue.push_back((cnum.as_def_id(), format!("::{alias}")));
+                result.push((cnum, format!("::{alias}")));
             }
         }
+    }
+    result
+}
+
+// Resolve actual publicly exported paths, not diagnostic type-name strings.
+// `roots` are the crates reachable from the executable's root and the prefix each is
+// spelled with: its direct externs, plus any indirect dependency the wrapper will
+// expose with an extra `--extern` when it compiles the generated registrations.
+fn paths(tcx: TyCtxt<'_>, roots: &[(CrateNum, String)]) -> HashMap<DefId, String> {
+    // Visit external crates before the local root.  A local `use dbgvis::Visualize`
+    // re-export otherwise wins the map entry and produces `crate::register_type!`
+    // instead of the actual facade path.
+    let mut queue = VecDeque::new();
+    for (cnum, prefix) in roots {
+        queue.push_back((cnum.as_def_id(), prefix.clone()));
+    }
+    for &cnum in tcx.crates(()) {
         if tcx.crate_name(cnum).as_str() == "std" {
             queue.push_back((cnum.as_def_id(), "::std".into()));
         }
@@ -166,9 +182,9 @@ fn paths(tcx: TyCtxt<'_>) -> HashMap<DefId, String> {
 /// The crate names are explicit rather than inferred from MIR availability: the
 /// distributed `std` and `core` also encode MIR, and scanning them would turn every
 /// standard-library local into a registered root.
-fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
+fn selected_crates(tcx: TyCtxt<'_>) -> HashSet<CrateNum> {
     let Ok(patterns) = std::env::var("DBGVIS_SCAN_PATTERNS") else {
-        return Vec::new();
+        return HashSet::new();
     };
     let patterns: Vec<regex::Regex> = patterns
         .split(',')
@@ -182,7 +198,7 @@ fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
         })
         .collect();
     if patterns.is_empty() {
-        return Vec::new();
+        return HashSet::new();
     }
     // Never scan the standard library or dbgvis itself, whatever the patterns say. The
     // distributed std/core encode MIR, so a broad pattern would turn thousands of
@@ -229,6 +245,13 @@ fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
             );
         }
     }
+    selected
+}
+
+fn dependency_functions<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    selected: &HashSet<CrateNum>,
+) -> Vec<ty::Instance<'tcx>> {
     let is_selected = |did: DefId| selected.contains(&did.krate);
     let mut queue: VecDeque<DefId> = selected.iter().map(|cnum| cnum.as_def_id()).collect();
     let mut result = Vec::new();
@@ -255,7 +278,7 @@ fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
     // is not reachable from the implementing type either. Without this, a local in a
     // `Display`/`Iterator`/custom-trait method is scanned when the code sits in the
     // executable but silently skipped when the same code sits in a library.
-    for &cnum in &selected {
+    for &cnum in selected {
         for implementation in tcx.trait_impls_in_crate(cnum) {
             result.extend(impl_functions(tcx, *implementation));
         }
@@ -472,7 +495,59 @@ impl Callbacks for Driver {
         if self.inject {
             return Compilation::Continue;
         }
-        let paths = paths(tcx);
+        let selected = selected_crates(tcx);
+        let direct = direct_externs(tcx);
+        // A selected crate the executable only depends on transitively has no `--extern`,
+        // so nothing in it can be spelled from the executable's root. Rather than making
+        // the user add a dependency they never call, tell the wrapper to pass
+        // `--extern <name>=<rlib>` when it compiles the generated registrations: the
+        // crate is linked already, this only puts its name in the extern prelude.
+        let direct_crates: HashSet<CrateNum> = direct.iter().map(|(cnum, _)| *cnum).collect();
+        let direct_aliases: HashSet<&str> =
+            direct.iter().map(|(_, alias)| alias.as_str()).collect();
+        let mut indirect: Vec<(CrateNum, String)> = Vec::new();
+        let mut externs = String::new();
+        let mut indirect_names: Vec<CrateNum> = selected
+            .iter()
+            .copied()
+            .filter(|cnum| !direct_crates.contains(cnum))
+            .collect();
+        indirect_names.sort_by_key(|cnum| tcx.crate_name(*cnum));
+        for cnum in indirect_names {
+            let name = tcx.crate_name(cnum);
+            let spelled = format!("::{name}");
+            // Two linked versions of one crate, or a clash with a direct alias, would make
+            // the bare name ambiguous inside the executable; leave those to the user.
+            let same_name = tcx
+                .crates(())
+                .iter()
+                .filter(|other| tcx.crate_name(**other) == name)
+                .count();
+            if same_name > 1 || direct_aliases.contains(spelled.as_str()) {
+                eprintln!(
+                    "dbgvis auto: not exposing indirect dependency `{name}`: its name is ambiguous in this executable"
+                );
+                continue;
+            }
+            let source = tcx.used_crate_source(cnum);
+            // `--extern` for a linked crate needs the rlib; a metadata-only build may have
+            // resolved the sibling rmeta instead, and the two sit side by side.
+            let rlib = [&source.rlib, &source.rmeta]
+                .into_iter()
+                .flatten()
+                .map(|path| path.with_extension("rlib"))
+                .find(|path| path.exists());
+            let Some(rlib) = rlib else {
+                eprintln!("dbgvis auto: not exposing indirect dependency `{name}`: no rlib found");
+                continue;
+            };
+            eprintln!("dbgvis auto: exposing indirect dependency `{name}` via --extern");
+            externs.push_str(&format!("{name}={}\n", rlib.display()));
+            indirect.push((cnum, spelled));
+        }
+        let mut roots = direct;
+        roots.extend(indirect);
+        let paths = paths(tcx, &roots);
         let facade = paths
             .iter()
             .find_map(|(did, path)| {
@@ -536,7 +611,7 @@ impl Callbacks for Driver {
         // `-Zalways-encode-mir`. The crate list is explicit because the distributed
         // std/core encode MIR too, and scanning those would register thousands of
         // standard-library locals.
-        instances.extend(dependency_functions(tcx));
+        instances.extend(dependency_functions(tcx, &selected));
         for instance in instances {
             let name = tcx.def_path_str(instance.def_id());
             if name.contains("__dbgvis") || name.contains("__Dbg") {
@@ -623,6 +698,7 @@ impl Callbacks for Driver {
         }
         assert!(lines.len() <= 4096, "dbgvis auto: candidate limit exceeded");
         write_changed(&self.plan, &lines.into_values().collect::<String>());
+        write_changed(&self.plan.with_extension("externs"), &externs);
         write_changed(
             &self.plan.with_extension("tsv"),
             &report
