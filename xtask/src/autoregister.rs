@@ -548,10 +548,33 @@ foreign = {{ path = "foreign" }}
 /// none. The driver must list such a crate with its rlib and the wrapper must pass it
 /// as an extra `--extern` when compiling the registrations. `leaf` keeps its MIR
 /// through the documented per-package `profile-rustflags` recipe, not the wrapper.
+///
+/// Three shapes: the plain case; a leaf whose library is named after a keyword, whose
+/// path root must be spelled raw; and an executable that already declares (but never
+/// uses) a dependency under the leaf's name, where a second `--extern` would fail the
+/// build and the crate must be skipped instead.
 fn indirect_dependency() -> Result {
+    indirect_case("leaf", false, "::leaf::r#LeafLocal")?;
+    indirect_case("async", false, "::r#async::r#LeafLocal")?;
+    indirect_case("leaf", true, "")?;
+    println!("AUTO_INDIRECT_DEPENDENCY_OK");
+    Ok(())
+}
+
+/// Build app -> mid -> leaf with the leaf library named `leaf_lib`; with
+/// `occupied_alias`, the app also declares an unused dependency aliased `leaf`.
+/// `expected_root` is the registration path that must appear, or "" when the crate
+/// must be skipped.
+fn indirect_case(leaf_lib: &str, occupied_alias: bool, expected_root: &str) -> Result {
     let scratch = TempDir::new("dbgvis indirect ")?;
     let project = scratch.path();
     let facade = root().join("crates/dbgvis").display().to_string();
+    let alias = if occupied_alias {
+        r#"leaf = { package = "unused", path = "unused" }
+"#
+    } else {
+        ""
+    };
     write(
         project.join("Cargo.toml"),
         &format!(
@@ -561,11 +584,11 @@ name = "indirect_app"
 version = "0.0.0"
 edition = "2024"
 [workspace]
-exclude = ["mid", "leaf"]
+exclude = ["mid", "leaf", "unused"]
 [dependencies]
 dv = {{ package = "dbgvis", path = "{facade}", features = ["derive"] }}
 mid = {{ path = "mid" }}
-[profile.dev.package.leaf]
+{alias}[profile.dev.package.leaf]
 rustflags = ["-Zalways-encode-mir"]
 "#
         ),
@@ -574,13 +597,16 @@ rustflags = ["-Zalways-encode-mir"]
         project.join("mid/Cargo.toml"),
         "[package]\nname = \"mid\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[dependencies]\nleaf = { path = \"../leaf\" }\n",
     )?;
+    // The extern name is the library target's name; the raw form works for both.
     write(
         project.join("mid/src/lib.rs"),
-        "pub fn run() -> u8 { leaf::work() }\n",
+        &format!("pub fn run() -> u8 {{ r#{leaf_lib}::work() }}\n"),
     )?;
     write(
         project.join("leaf/Cargo.toml"),
-        "[package]\nname = \"leaf\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        &format!(
+            "[package]\nname = \"leaf\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[lib]\nname = \"{leaf_lib}\"\n"
+        ),
     )?;
     write(
         project.join("leaf/src/lib.rs"),
@@ -593,6 +619,13 @@ pub fn work() -> u8 {
 }
 "#,
     )?;
+    if occupied_alias {
+        write(
+            project.join("unused/Cargo.toml"),
+            "[package]\nname = \"unused\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        )?;
+        write(project.join("unused/src/lib.rs"), "pub fn nothing() {}\n")?;
+    }
     write(
         project.join("src/main.rs"),
         r#"
@@ -604,7 +637,11 @@ fn main() {
 }
 "#,
     )?;
-    let target = root().join("target/auto-register/indirect");
+    let label = format!(
+        "{leaf_lib}{}",
+        if occupied_alias { "-occupied" } else { "" }
+    );
+    let target = root().join(format!("target/auto-register/indirect-{label}"));
     let output = environment(
         Run::new("cargo")
             .args(["build", "--offline"])
@@ -614,31 +651,45 @@ fn main() {
         &target,
         None,
     )
-    .env("DBGVIS_SCAN_CRATES", "leaf")
+    .env("DBGVIS_SCAN_CRATES", leaf_lib)
     .output()?;
-    ensure!(
-        output.contains("exposing indirect dependency `leaf` via --extern"),
-        "the indirect crate must be announced\n{output}"
-    );
     let (path, generated, report) = plan(&output)?;
-    ensure!(
-        generated.contains("::leaf::r#LeafLocal"),
-        "the indirect crate's local must register under its own name\n{generated}\n{report}"
-    );
-    ensure!(
-        !report.contains("LeafLocal\t") || !report.contains("not accessible"),
-        "LeafLocal must not be reported unnameable\n{report}"
-    );
-    let externs = read(&path.with_extension("externs"))?;
-    ensure!(
-        externs.starts_with("leaf=") && externs.trim_end().ends_with(".rlib"),
-        "the externs file must map leaf to its rlib\n{externs}"
-    );
+    if expected_root.is_empty() {
+        ensure!(
+            output.contains(&format!(
+                "not exposing indirect dependency `{leaf_lib}`: its name is ambiguous"
+            )),
+            "[{label}] an occupied alias must be skipped with a diagnostic, not a second --extern\n{output}"
+        );
+        ensure!(
+            !generated.contains("LeafLocal"),
+            "[{label}] a skipped crate must not register\n{generated}\n{report}"
+        );
+    } else {
+        ensure!(
+            output.contains(&format!(
+                "exposing indirect dependency `{leaf_lib}` via --extern"
+            )),
+            "[{label}] the indirect crate must be announced\n{output}"
+        );
+        ensure!(
+            generated.contains(expected_root),
+            "[{label}] the indirect crate's local must register as {expected_root}\n{generated}\n{report}"
+        );
+        let externs = read(&path.with_extension("externs"))?;
+        ensure!(
+            externs.starts_with(&format!("{leaf_lib}=")) && externs.trim_end().ends_with(".rlib"),
+            "[{label}] the externs file must map the crate to its rlib\n{externs}"
+        );
+    }
     Run::new(target.join("debug/indirect_app"))
         .marker("INDIRECT_EXECUTED")
         .timeout(30)
         .check()?;
-    println!("AUTO_INDIRECT_DEPENDENCY_OK");
+    println!(
+        "AUTO_INDIRECT_{}_OK",
+        label.to_uppercase().replace('-', "_")
+    );
     Ok(())
 }
 

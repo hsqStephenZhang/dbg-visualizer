@@ -77,6 +77,18 @@ fn write_changed(path: &std::path::Path, contents: &str) {
     }
 }
 
+/// How a crate is spelled as a path root inside the executable. A crate may legally
+/// be named after a keyword (`[lib] name = "async"`); the path then needs the raw
+/// form `::r#async`, while the name handed to `--extern` stays as is.
+fn root_path(tcx: TyCtxt<'_>, name: &str) -> String {
+    let symbol = Symbol::intern(name);
+    if symbol.can_be_raw() && symbol.is_reserved(|| tcx.sess.edition()) {
+        format!("::r#{name}")
+    } else {
+        format!("::{name}")
+    }
+}
+
 /// Crates the executable names directly, as `(crate, "::alias")` for every `--extern`
 /// alias that resolves to them. Only these -- and the standard library -- are in the
 /// executable's extern prelude, so only their items can be spelled from its root.
@@ -107,7 +119,7 @@ fn direct_externs(tcx: TyCtxt<'_>) -> Vec<(CrateNum, String)> {
                         )
                 })
             }) {
-                result.push((cnum, format!("::{alias}")));
+                result.push((cnum, root_path(tcx, alias)));
             }
         }
     }
@@ -503,8 +515,18 @@ impl Callbacks for Driver {
         // `--extern <name>=<rlib>` when it compiles the generated registrations: the
         // crate is linked already, this only puts its name in the extern prelude.
         let direct_crates: HashSet<CrateNum> = direct.iter().map(|(cnum, _)| *cnum).collect();
-        let direct_aliases: HashSet<&str> =
-            direct.iter().map(|(_, alias)| alias.as_str()).collect();
+        // Names already taken in the executable's extern prelude. Read them from every
+        // `--extern` Cargo passed, not from the loaded crates: a direct dependency the
+        // source never uses is not loaded at all, yet its alias still occupies the name,
+        // and adding a second `--extern` for it would fail the build (E0464) instead of
+        // skipping as designed.
+        let occupied: HashSet<&str> = tcx
+            .sess
+            .opts
+            .externs
+            .iter()
+            .map(|(alias, _)| alias.as_str())
+            .collect();
         let mut indirect: Vec<(CrateNum, String)> = Vec::new();
         let mut externs = String::new();
         let mut indirect_names: Vec<CrateNum> = selected
@@ -515,7 +537,7 @@ impl Callbacks for Driver {
         indirect_names.sort_by_key(|cnum| tcx.crate_name(*cnum));
         for cnum in indirect_names {
             let name = tcx.crate_name(cnum);
-            let spelled = format!("::{name}");
+            let spelled = root_path(tcx, name.as_str());
             // Two linked versions of one crate, or a clash with a direct alias, would make
             // the bare name ambiguous inside the executable; leave those to the user.
             let same_name = tcx
@@ -523,7 +545,7 @@ impl Callbacks for Driver {
                 .iter()
                 .filter(|other| tcx.crate_name(**other) == name)
                 .count();
-            if same_name > 1 || direct_aliases.contains(spelled.as_str()) {
+            if same_name > 1 || occupied.contains(name.as_str()) {
                 eprintln!(
                     "dbgvis auto: not exposing indirect dependency `{name}`: its name is ambiguous in this executable"
                 );
