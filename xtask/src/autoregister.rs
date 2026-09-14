@@ -20,12 +20,14 @@ pub fn tools() -> PathBuf {
 ///
 /// `scan` pins `DBGVIS_SCAN_DEPS` so a gate never inherits it from the developer's
 /// shell: `None` removes it, which is what an ordinary build sees and what Cargo's
-/// dep-info records differently from an explicit "0".
+/// dep-info records differently from an explicit "0". `DBGVIS_SCAN_CRATES` is removed
+/// for the same reason; a gate that wants patterns sets it on the returned `Run`.
 pub fn environment(run: Run, crate_name: &str, target: &Path, scan: Option<&str>) -> Run {
     let run = run
         .env("RUSTC_WORKSPACE_WRAPPER", tools().join("wrapper.py"))
         .env("DBGVIS_AUTO_CRATE", crate_name)
-        .env("CARGO_TARGET_DIR", target);
+        .env("CARGO_TARGET_DIR", target)
+        .env_remove("DBGVIS_SCAN_CRATES");
     match scan {
         Some(mode) => run.env("DBGVIS_SCAN_DEPS", mode),
         None => run.env_remove("DBGVIS_SCAN_DEPS"),
@@ -426,6 +428,43 @@ fn main() {
     }
     println!("AUTO_LIB_AND_BIN_OK");
     println!("AUTO_SCAN_MODE_INVALIDATION_OK");
+
+    // DBGVIS_SCAN_CRATES: regular expressions over whole crate names, implying the
+    // scan is on. `both_tar.*` selects the library; `both_tar` alone must not, which
+    // is what tells full-match apart from substring search.
+    let patterned = |crates: &str| {
+        environment(
+            Run::new("cargo")
+                .args(["build", "--offline"])
+                .cwd(project)
+                .timeout(600),
+            "both_targets",
+            &target,
+            None,
+        )
+        .env("DBGVIS_SCAN_CRATES", crates)
+    };
+    for (crates, expected) in [("both_tar.*", true), ("both_tar", false)] {
+        let output = patterned(crates).output()?;
+        let (_, generated, report) = plan(&output)?;
+        ensure!(
+            generated.contains("::both_targets::r#LibOnly") == expected,
+            "DBGVIS_SCAN_CRATES={crates} must {}select the library\n{generated}\n{report}",
+            if expected { "" } else { "not " }
+        );
+        if !expected {
+            ensure!(
+                output.contains("matches no scannable crate"),
+                "an unmatched pattern must be reported\n{output}"
+            );
+        }
+    }
+    let output = patterned("[").expect_failure().output()?;
+    ensure!(
+        output.contains("invalid DBGVIS_SCAN_CRATES pattern `[`"),
+        "an invalid pattern must fail naming the pattern\n{output}"
+    );
+    println!("AUTO_SCAN_PATTERNS_OK");
     Ok(())
 }
 

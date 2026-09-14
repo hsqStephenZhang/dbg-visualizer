@@ -9,10 +9,12 @@ extern crate rustc_middle;
 extern crate rustc_parse;
 extern crate rustc_span;
 extern crate rustc_trait_selection;
+// Shipped inside librustc_driver; usable here without a Cargo dependency.
+extern crate regex;
 
 use rustc_driver::{Callbacks, Compilation};
 use rustc_hir::def::{DefKind, Res};
-use rustc_hir::def_id::{CRATE_DEF_ID, DefId, LOCAL_CRATE};
+use rustc_hir::def_id::{CRATE_DEF_ID, CrateNum, DefId, LOCAL_CRATE};
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_interface::interface::Compiler;
 use rustc_middle::mono::MonoItem;
@@ -32,7 +34,11 @@ struct Driver {
 // mode changes; tracking this solely in the injected executable is too late.
 fn track_wrapper_inputs(config: &mut rustc_interface::interface::Config) {
     config.track_state = Some(Box::new(|sess| {
-        for key in ["DBGVIS_AUTO_CRATE", "DBGVIS_SCAN_DEPS"] {
+        for key in [
+            "DBGVIS_AUTO_CRATE",
+            "DBGVIS_SCAN_DEPS",
+            "DBGVIS_SCAN_CRATES",
+        ] {
             sess.env_depinfo.borrow_mut().insert((
                 Symbol::intern(key),
                 std::env::var(key).ok().as_deref().map(Symbol::intern),
@@ -47,7 +53,9 @@ fn track_wrapper_inputs(config: &mut rustc_interface::interface::Config) {
             // A dep-info entry naming a file that does not exist makes Cargo treat
             // every unit as dirty forever, so a vendored wrapper shipped without the
             // whole checkout must lose the tracking rather than the caching.
-            let Ok(path) = path.canonicalize() else { continue };
+            let Ok(path) = path.canonicalize() else {
+                continue;
+            };
             sess.file_depinfo
                 .borrow_mut()
                 .insert(Symbol::intern(path.to_str().expect("UTF-8 tool path")));
@@ -142,7 +150,13 @@ fn paths(tcx: TyCtxt<'_>) -> HashMap<DefId, String> {
     result
 }
 
-/// Non-generic functions of the dependency crates named in `DBGVIS_SCAN_CRATES`.
+/// Non-generic functions of the dependency crates selected by `DBGVIS_SCAN_PATTERNS`.
+///
+/// The variable holds comma-separated regular expressions, each matched against a
+/// whole crate name; the wrapper either forwards the user's `DBGVIS_SCAN_CRATES` or
+/// escapes the names of the workspace libraries whose MIR it kept. It is a separate
+/// variable so that the user's one passes through unchanged and can be tracked in
+/// dep-info (Cargo checks a recorded env-dep against its own environment).
 ///
 /// Upstream non-generic functions are codegened in their own crate, so they never
 /// appear in this crate's mono items and their locals are invisible to the scan.
@@ -153,20 +167,70 @@ fn paths(tcx: TyCtxt<'_>) -> HashMap<DefId, String> {
 /// distributed `std` and `core` also encode MIR, and scanning them would turn every
 /// standard-library local into a registered root.
 fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
-    let Ok(selected) = std::env::var("DBGVIS_SCAN_CRATES") else {
+    let Ok(patterns) = std::env::var("DBGVIS_SCAN_PATTERNS") else {
         return Vec::new();
     };
-    let selected: HashSet<&str> = selected.split(',').filter(|s| !s.is_empty()).collect();
-    if selected.is_empty() {
+    let patterns: Vec<regex::Regex> = patterns
+        .split(',')
+        .map(str::trim)
+        .filter(|pattern| !pattern.is_empty())
+        .map(|pattern| {
+            regex::Regex::new(&format!("^(?:{pattern})$")).unwrap_or_else(|error| {
+                eprintln!("dbgvis auto: invalid DBGVIS_SCAN_CRATES pattern `{pattern}`: {error}");
+                std::process::exit(1);
+            })
+        })
+        .collect();
+    if patterns.is_empty() {
         return Vec::new();
     }
-    let is_selected = |did: DefId| selected.contains(tcx.crate_name(did.krate).as_str());
-    let mut queue: VecDeque<DefId> = VecDeque::new();
-    for &cnum in tcx.crates(()) {
-        if selected.contains(tcx.crate_name(cnum).as_str()) {
-            queue.push_back(cnum.as_def_id());
+    // Never scan the standard library or dbgvis itself, whatever the patterns say. The
+    // distributed std/core encode MIR, so a broad pattern would turn thousands of
+    // standard-library locals into roots; and `dbgvis_runtime` binds locals of its own
+    // registry types, which are intentionally unformattable and fail strict mode.
+    let sysroot = std::env::var_os("DBGVIS_SYSROOT").map(PathBuf::from);
+    let scannable = |cnum: CrateNum| {
+        let name = tcx.crate_name(cnum);
+        if matches!(
+            name.as_str(),
+            "dbgvis" | "dbgvis_runtime" | "dbgvis_macros" | "linkme" | "linkme_impl"
+        ) {
+            return false;
+        }
+        if let Some(sysroot) = &sysroot {
+            let source = tcx.used_crate_source(cnum);
+            if [&source.rlib, &source.rmeta, &source.dylib]
+                .into_iter()
+                .flatten()
+                .any(|path| path.starts_with(sysroot))
+            {
+                return false;
+            }
+        }
+        patterns
+            .iter()
+            .any(|pattern| pattern.is_match(name.as_str()))
+    };
+    let selected: HashSet<CrateNum> = tcx
+        .crates(())
+        .iter()
+        .copied()
+        .filter(|&cnum| scannable(cnum))
+        .collect();
+    for pattern in &patterns {
+        let hit = selected
+            .iter()
+            .any(|&cnum| pattern.is_match(tcx.crate_name(cnum).as_str()));
+        if !hit {
+            // A typo would otherwise just scan nothing, silently.
+            eprintln!(
+                "dbgvis auto: DBGVIS_SCAN_CRATES pattern `{}` matches no scannable crate",
+                &pattern.as_str()[3..pattern.as_str().len() - 2]
+            );
         }
     }
+    let is_selected = |did: DefId| selected.contains(&did.krate);
+    let mut queue: VecDeque<DefId> = selected.iter().map(|cnum| cnum.as_def_id()).collect();
     let mut result = Vec::new();
     let mut visited = HashSet::new();
     // Only a function needing no type or const arguments has a single instantiation
@@ -191,10 +255,7 @@ fn dependency_functions<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Instance<'tcx>> {
     // is not reachable from the implementing type either. Without this, a local in a
     // `Display`/`Iterator`/custom-trait method is scanned when the code sits in the
     // executable but silently skipped when the same code sits in a library.
-    for &cnum in tcx.crates(()) {
-        if !selected.contains(tcx.crate_name(cnum).as_str()) {
-            continue;
-        }
+    for &cnum in &selected {
         for implementation in tcx.trait_impls_in_crate(cnum) {
             result.extend(impl_functions(tcx, *implementation));
         }

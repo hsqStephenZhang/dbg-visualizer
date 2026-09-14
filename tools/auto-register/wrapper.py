@@ -3,6 +3,7 @@
 import hashlib
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -120,6 +121,18 @@ def main():
     # no formatting trait now fails the build from library code the debugging session
     # may never look at. Off, the scan stays inside the executable's own functions.
     scan_deps = os.environ.get("DBGVIS_SCAN_DEPS", "") not in ("", "0")
+    # DBGVIS_SCAN_CRATES narrows or widens *which* crates: comma-separated regular
+    # expressions, each matched against a whole crate name (the `_` form, so `regex`
+    # selects exactly that crate and `regex.*` also takes `regex_syntax`). Setting it
+    # implies scanning on. Unset, DBGVIS_SCAN_DEPS=1 scans every workspace library.
+    # Only workspace libraries can have their MIR kept; a matched registry crate still
+    # yields its `#[inline]`/generic functions, which carry MIR anyway.
+    patterns = [p.strip() for p in os.environ.get("DBGVIS_SCAN_CRATES", "").split(",") if p.strip()]
+    try:
+        compiled = [re.compile(p) for p in patterns]
+    except re.error as error:
+        sys.exit(f"dbgvis auto: invalid DBGVIS_SCAN_CRATES pattern `{error.pattern}`: {error}")
+    scan_deps = scan_deps or bool(compiled)
 
     if name != selected or crate_type != "bin":
         # Every workspace crate that is not the selected executable. A non-generic
@@ -127,11 +140,16 @@ def main():
         # executable's scan unless the MIR survives; keep it and record the crate name
         # for the driver. Library targets only: build scripts and proc macros are not
         # linked into the executable, so their types can never be registered there.
-        recorded = scan_directory(args, selected) if scan_deps else None
-        if recorded is not None and crate_type not in ("bin", "proc-macro"):
-            recorded.mkdir(parents=True, exist_ok=True)
-            (recorded / name).write_text("")
-            if "-Zalways-encode-mir" not in args:
+        if scan_deps and crate_type not in ("bin", "proc-macro"):
+            if compiled:
+                keep = any(p.fullmatch(name) for p in compiled)
+            else:
+                recorded = scan_directory(args, selected)
+                keep = recorded is not None
+                if keep:
+                    recorded.mkdir(parents=True, exist_ok=True)
+                    (recorded / name).write_text("")
+            if keep and "-Zalways-encode-mir" not in args:
                 args = args + ["-Zalways-encode-mir"]
         if name == selected:
             # A package holding both src/lib.rs and src/main.rs gives both targets the
@@ -149,17 +167,27 @@ def main():
     directory.mkdir(parents=True, exist_ok=True)
     plan = directory / "register.rs"
     env["DBGVIS_PLAN"] = str(plan)
-    # Names recorded while this target directory's workspace libraries were built.
-    # A name the executable does not actually link matches no crate and is ignored.
-    recorded = scan_directory(args, selected) if scan_deps else None
-    env["DBGVIS_SCAN_CRATES"] = ",".join(
-        sorted(p.name for p in recorded.iterdir())
-        if recorded is not None and recorded.is_dir()
-        else []
-    )
-    if scan_deps and recorded is None:
-        print("dbgvis auto: cannot locate Cargo's target directory;"
-              " dependency scanning is disabled for this build", file=sys.stderr)
+    # The driver always receives regular expressions, through DBGVIS_SCAN_PATTERNS
+    # rather than the user's DBGVIS_SCAN_CRATES: Cargo validates a recorded env-dep
+    # against its own environment, so a variable the wrapper rewrites for rustc would
+    # never match and every build would be dirty. In pattern mode they are the user's
+    # own; otherwise they are the names recorded while this target directory's
+    # workspace libraries were built, escaped. A name the executable does not link
+    # matches no crate and is ignored.
+    if compiled:
+        env["DBGVIS_SCAN_PATTERNS"] = ",".join(patterns)
+    else:
+        recorded = scan_directory(args, selected) if scan_deps else None
+        env["DBGVIS_SCAN_PATTERNS"] = ",".join(
+            sorted(re.escape(p.name) for p in recorded.iterdir())
+            if recorded is not None and recorded.is_dir()
+            else []
+        )
+        if scan_deps and recorded is None:
+            print("dbgvis auto: cannot locate Cargo's target directory;"
+                  " dependency scanning is disabled for this build", file=sys.stderr)
+    # Lets the driver refuse to scan the standard library whatever the patterns say.
+    env["DBGVIS_SYSROOT"] = sysroot
     with (directory / "invocations.log").open("a") as log:
         log.write(f"{time.time_ns()} {os.getpid()}\n")
     print(f"dbgvis auto: scan {selected} -> {plan}", file=sys.stderr)
