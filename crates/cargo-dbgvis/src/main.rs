@@ -19,9 +19,12 @@ const WRAPPER_PY: &str = include_str!("../../../tools/auto-register/wrapper.py")
 const DRIVER_RS: &str = include_str!("../../../tools/auto-register/driver.rs");
 const TRACKED_RS: &str = include_str!("../../../tools/auto-register/tracked.rs");
 
-/// The driver links `rustc_private`, which has no stable API, so it is pinned to the
-/// exact compiler it was written against.
-const EXPECTED_RUSTC: &str = "rustc 1.99.0-nightly (12c36e253 2026-08-10)";
+/// The nightly the driver was last verified against. NOT a hard gate: `setup`
+/// compiles the driver against whatever nightly is active and records that exact
+/// build, so any nightly whose rustc-internal (`rustc_private`) API the driver still
+/// compiles against works. This is only the version to *suggest* when the active
+/// toolchain is not a nightly or the driver will not compile against it.
+const TESTED_RUSTC: &str = "rustc 1.99.0-nightly (12c36e253 2026-08-10)";
 
 const USAGE: &str = "\
 cargo dbgvis <command>
@@ -85,35 +88,51 @@ fn has_rustc_dev() -> bool {
         .unwrap_or(false)
 }
 
-/// The nightly the driver was built against, spelled as a rustup toolchain name.
-/// Derived from EXPECTED_RUSTC's trailing `(<hash> <date>)` so the two never drift.
-fn expected_toolchain() -> String {
-    EXPECTED_RUSTC
+/// A nightly's rustup toolchain name, derived from TESTED_RUSTC's trailing
+/// `(<hash> <date>)`. Only used to *suggest* a known-good toolchain.
+fn tested_toolchain() -> String {
+    TESTED_RUSTC
         .rsplit_once(' ')
         .and_then(|(_, tail)| tail.strip_suffix(')'))
         .map(|date| format!("nightly-{date}"))
         .unwrap_or_else(|| "nightly".to_owned())
 }
 
-/// Explain why `version` is not the compiler the driver needs, and give the exact,
-/// copyable commands that fix it. Distinguishes "a nightly, but the wrong build" from
-/// "not a nightly at all" -- the first is a date mismatch, the second a channel one.
-fn toolchain_help(version: &str) -> String {
-    let toolchain = expected_toolchain();
-    let install = format!("rustup toolchain install {toolchain} --component rustc-dev");
-    let run = format!("cargo +{toolchain} dbgvis setup");
-    let lead = if version.contains("-nightly") {
-        "this is a nightly build, but not the exact one the driver was written against"
-    } else {
-        "this is not a nightly toolchain; the driver needs a pinned nightly"
-    };
+fn is_nightly(version: &str) -> bool {
+    version.contains("-nightly")
+}
+
+/// Two copyable lines that install the last-verified nightly and run setup under it.
+fn suggest_tested() -> String {
+    let toolchain = tested_toolchain();
     format!(
-        "{lead}.\n\
-         \x20 expected {EXPECTED_RUSTC}\n\
-         \x20 got      {version}\n\
-         install that build and run setup under it:\n\
-         \x20 {install}\n\
-         \x20 {run}"
+        "\x20 rustup toolchain install {toolchain} --component rustc-dev\n\
+         \x20 cargo +{toolchain} dbgvis setup"
+    )
+}
+
+/// The active toolchain is a release/beta build, not a nightly. Specialization and
+/// `rustc_private` both require nightly, so there is no build to make here.
+fn not_nightly_help(version: &str) -> String {
+    format!(
+        "this is not a nightly toolchain; the driver needs a nightly with rustc-dev\n\
+         (it links rustc_private and uses #![feature(specialization)]).\n\
+         \x20 got {version}\n\
+         install a nightly and run setup under it, e.g. the last-verified one:\n\
+         {}",
+        suggest_tested()
+    )
+}
+
+/// The driver source would not compile against the active nightly: its rustc-internal
+/// API has drifted. Printed after rustc's own errors.
+fn compile_failed_help(version: &str) -> String {
+    format!(
+        "the driver did not compile against {version}.\n\
+         this nightly's internal rustc_private API differs from what the driver expects.\n\
+         use the last-verified nightly instead:\n\
+         {}",
+        suggest_tested()
     )
 }
 
@@ -133,13 +152,14 @@ fn host_triple() -> String {
 
 fn setup() -> Result<(), String> {
     let version = rustc_version()?;
-    if version != EXPECTED_RUSTC {
-        return Err(toolchain_help(&version));
+    if !is_nightly(&version) {
+        return Err(not_nightly_help(&version));
     }
     if !has_rustc_dev() {
-        return Err("rustc-dev is not installed for the active toolchain\n\
-                    add it: `rustup component add rustc-dev`"
-            .into());
+        return Err(format!(
+            "rustc-dev is not installed for the active toolchain ({version}).\n\
+             add it: `rustup component add rustc-dev`"
+        ));
     }
     let home = home();
     fs::create_dir_all(&home).map_err(|error| format!("create {}: {error}", home.display()))?;
@@ -162,10 +182,17 @@ fn setup() -> Result<(), String> {
         .status()
         .map_err(|error| format!("compile driver: {error}"))?;
     if !status.success() {
-        return Err("compiling the driver failed".into());
+        return Err(compile_failed_help(&version));
     }
 
+    // Record the exact toolchain this driver was built for. The wrapper compares a
+    // project's build toolchain against this file, because a rustc_driver binary is
+    // ABI-bound to the compiler and sysroot it was compiled with.
+    fs::write(home.join("toolchain"), format!("{version}\n"))
+        .map_err(|error| format!("write toolchain record: {error}"))?;
+
     println!("dbgvis: installed to {}", home.display());
+    println!("dbgvis: driver built for {version}");
     println!("\nAdd to your project's .cargo/config.toml:\n");
     print!("{}", config_snippet(&home, "<your-bin-name>"));
     Ok(())
@@ -211,21 +238,49 @@ fn doctor() -> Result<(), String> {
         );
         good
     };
-    match rustc_version() {
+    let active = rustc_version();
+    match &active {
         Ok(version) => {
-            ok &= check("toolchain", version == EXPECTED_RUSTC, &version);
-            if version != EXPECTED_RUSTC {
-                for line in toolchain_help(&version).lines() {
-                    println!("      {line}");
+            let nightly = is_nightly(version);
+            ok &= check("nightly toolchain", nightly, version);
+            if !nightly {
+                println!("      not a nightly; the driver needs one, e.g.:");
+                for line in suggest_tested().lines() {
+                    println!("    {line}");
                 }
             }
         }
-        Err(error) => ok &= check("toolchain", false, &error),
+        Err(error) => ok &= check("nightly toolchain", false, error),
     }
     ok &= check("rustc-dev", has_rustc_dev(), "librustc_driver in sysroot");
     let home = home();
     let driver = home.join("driver");
     ok &= check("driver", driver.exists(), &driver.display().to_string());
+    // The driver is ABI-bound to the toolchain it was built for; a project must build
+    // with that same toolchain. Compare the recorded build toolchain to the active one.
+    let record = home.join("toolchain");
+    match (fs::read_to_string(&record), &active) {
+        (Ok(built_for), Ok(version)) => {
+            let built_for = built_for.trim();
+            let matches = built_for == version.as_str();
+            ok &= check("driver matches toolchain", matches, built_for);
+            if !matches {
+                println!("      built for {built_for}");
+                println!("      active    {version}");
+                println!(
+                    "      rebuild: `cargo dbgvis setup`, or switch to the driver's toolchain"
+                );
+            }
+        }
+        (Err(_), _) if driver.exists() => {
+            ok &= check(
+                "driver matches toolchain",
+                false,
+                "no toolchain record; re-run setup",
+            );
+        }
+        _ => {}
+    }
     if driver.exists() {
         let wrapper = home.join("wrapper.py");
         let fresh = [wrapper.as_path(), &home.join("driver.rs")]

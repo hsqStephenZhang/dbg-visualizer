@@ -62,7 +62,9 @@ feature-toggle coverage is driven from temporary projects the test suite generat
 workspace keeps only the three core crates plus an `xtask` verification entry point.
 
 To run `demo`, which needs no hand-written root registration, from the repository root
-(the driver requires `rustc 1.99.0-nightly (12c36e253 2026-08-10)`):
+(the driver needs a nightly toolchain with `rustc-dev`; it is compiled against whatever
+nightly is active and the build must then use that same nightly -- last verified on
+`rustc 1.99.0-nightly (12c36e253 2026-08-10)`):
 
 ```sh
 cargo xtask driver
@@ -74,7 +76,11 @@ Outside this repository, install the driver instead of using `cargo xtask`:
 `cargo install --path crates/cargo-dbgvis` (unpublished; from a checkout for now), then
 `cargo dbgvis setup` compiles it into a self-contained `DBGVIS_HOME` and `cargo dbgvis
 config <bin>` prints the `.cargo/config.toml` to point a project at it -- no repository on
-the build path. `cargo dbgvis doctor` checks the toolchain, rustc-dev, and the install.
+the build path. `setup` is not pinned to one exact build: run it under any nightly with
+`rustc-dev` and it compiles a driver for that nightly and records it, so each nightly gets
+its own matching driver; the wrapper then requires the project to build under that same
+nightly. `cargo dbgvis doctor` checks the toolchain is nightly, rustc-dev is present, and
+the installed driver matches the active toolchain.
 
 Break at `demo::checkpoint`, then after `run`, `up` use `dbgvis p map` or
 `dbgvis p index_borrowed`. A plain `cargo build --example demo` does not enable the

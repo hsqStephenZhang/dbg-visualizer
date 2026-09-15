@@ -9,8 +9,11 @@ use crate::harness::{Failure, Result, Run, TempDir, root, write};
 use crate::visibility;
 use std::path::{Path, PathBuf};
 
-/// Only the compiler revision audited by this experiment can build the driver.
-const EXPECTED_RUSTC: &str = "rustc 1.99.0-nightly (12c36e253 2026-08-10)";
+/// The compiler revision this experiment was last audited against. Not a hard gate:
+/// the driver is compiled against whatever nightly is active and the wrapper binds a
+/// project's build to that same revision, so any nightly the driver still compiles
+/// against works.
+const TESTED_RUSTC: &str = "rustc 1.99.0-nightly (12c36e253 2026-08-10)";
 
 pub fn tools() -> PathBuf {
     root().join("tools/auto-register")
@@ -60,18 +63,23 @@ pub fn build_driver() -> Result {
     let actual = Run::new("rustc").args(["--version"]).output()?;
     let actual = actual.trim();
     ensure!(
-        actual == EXPECTED_RUSTC,
-        "Unsupported driver toolchain: {actual}; expected {EXPECTED_RUSTC} with rustc-dev"
+        actual.contains("-nightly"),
+        "the driver needs a nightly toolchain with rustc-dev; active is {actual}\n\
+         (last verified against {TESTED_RUSTC})"
     );
-    let output = root().join("target/auto-register/driver");
-    std::fs::create_dir_all(output.parent().expect("has parent"))
+    let dir = root().join("target/auto-register");
+    std::fs::create_dir_all(&dir)
         .map_err(|error| Failure(format!("mkdir driver target: {error}")))?;
+    let output = dir.join("driver");
     Run::new("rustc")
         .arg(tools().join("driver.rs"))
         .args(["--edition=2024", "-C", "rpath=yes", "-D", "warnings", "-o"])
         .arg(&output)
         .timeout(600)
         .check()?;
+    // Record the toolchain the driver was built for; the wrapper binds project builds
+    // to it. In the repo this lives next to the driver, matching an installed home.
+    write(dir.join("toolchain"), &format!("{actual}\n"))?;
     println!("AUTO_DRIVER_BUILT {actual}");
     Ok(())
 }
@@ -310,9 +318,19 @@ fn installed_home() -> Result {
         .timeout(600)
         .marker("installed to")
         .check()?;
-    for name in ["wrapper.py", "driver.rs", "driver"] {
+    for name in ["wrapper.py", "driver.rs", "driver", "toolchain"] {
         ensure!(home.join(name).exists(), "setup did not produce {name}");
     }
+    // The recorded toolchain must be the one setup actually ran under, not a constant.
+    let active = Run::new("rustc").args(["--version"]).output()?;
+    let recorded = std::fs::read_to_string(home.join("toolchain"))
+        .map_err(|error| Failure(format!("read toolchain record: {error}")))?;
+    ensure!(
+        recorded.trim() == active.trim(),
+        "toolchain record {:?} is not the active toolchain {:?}",
+        recorded.trim(),
+        active.trim()
+    );
 
     // A project whose wrapper is the installed one and whose DBGVIS_HOME is the install.
     let project = scratch.path().join("app");
@@ -375,6 +393,40 @@ fn main() {
         .marker("INSTALLED_EXECUTED")
         .timeout(30)
         .check()?;
+
+    // The wrapper binds a build to the driver's recorded toolchain: a mismatched
+    // record must refuse the build rather than run the ABI-mismatched driver. Dirty
+    // the bin so cargo actually re-invokes the wrapper instead of reusing the cache.
+    write(
+        home.join("toolchain"),
+        "rustc 1.0.0-nightly (deadbeef0 2000-01-01)\n",
+    )?;
+    write(
+        project.join("src/main.rs"),
+        r#"// forced rebuild for the toolchain-mismatch check
+#[derive(Debug)] struct Cfg { retries: u32 }
+fn main() {
+    dv::enable!();
+    let cfg = Cfg { retries: 3 };
+    std::hint::black_box(&cfg);
+    println!("INSTALLED_EXECUTED");
+}
+"#,
+    )?;
+    let refused = Run::new("cargo")
+        .args(["build", "--offline"])
+        .cwd(&project)
+        .env("RUSTC_WORKSPACE_WRAPPER", home.join("wrapper.py"))
+        .env("DBGVIS_HOME", &home)
+        .env("DBGVIS_AUTO_CRATE", "installed_app")
+        .env("CARGO_TARGET_DIR", &target)
+        .timeout(120)
+        .expect_failure()
+        .output()?;
+    ensure!(
+        refused.contains("different toolchain than the driver"),
+        "a mismatched toolchain record must refuse the build\n{refused}"
+    );
     println!("AUTO_INSTALLED_HOME_OK");
     Ok(())
 }
