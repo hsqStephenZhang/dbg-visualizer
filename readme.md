@@ -1,21 +1,39 @@
 # Rust debugger visualizer
 
-通过 `#[derive(dbgvis::Visualize)]` 在 Rust 内递归格式化逻辑值；普通字段优先 Visualize，再回退 Debug、Display。HashMap/Vec 等使用公共迭代接口，不解析内部存储，不需要用户编写分页。
+`#[derive(dbgvis::Visualize)]` renders a value's *logical* view recursively, inside
+Rust: an ordinary field prefers `Visualize`, then falls back to `Debug`, then
+`Display`. `HashMap`/`Vec` and the like go through their public iteration APIs -- no
+parsing of internal storage, and no paging for the user to write.
 
-非泛型 derive 同时自动登记根入口，由 linkme 跨 crate 收集；main 只需 `dbgvis::enable!()`，不再需要集中式注册模块。只复用 Debug 的类型用 `#[dbgvis::register]`；第三方或泛型具体实例用 `dbgvis::register_type!(T)`。类型级 `#[dbgvis(no_register)]` 可关闭自动登记。
+A non-generic derive also registers a root entry, collected across crates by `linkme`;
+`main` only needs `dbgvis::enable!()`, with no central registration module. Reuse
+`Debug` on a type with `#[dbgvis::register]`; register a third-party or generic concrete
+instance with `dbgvis::register_type!(T)`. The type-level `#[dbgvis(no_register)]` turns
+auto-registration off.
 
-多个 crate 登记同一具体类型时，runtime 比较具体类型 TypeId 后合并模式和函数入口。借用根以自由生命周期替换为 `'static` 的同一类型作为身份，formatter 仍保持生命周期泛化。同名但身份不同的类型即使 size/align 一致也会拒绝；名称和布局不充当类型身份。
+When several crates register the same concrete type, the runtime compares concrete-type
+`TypeId`s before merging their modes and formatter functions. A borrowed root uses, as
+its identity, the same type with its free lifetimes replaced by `'static`, while the
+formatter stays lifetime-generic. A same-name but different-identity type is rejected
+even when its size/align match: names and layout are not type identity.
 
-当前为 **nightly specialization + GDB v2**，不保留 v1/LLDB 兼容层。[examples/explicit.rs](examples/explicit.rs) 演示 derive Visualize 和显式登记；[examples/demo.rs](examples/demo.rs) 保留 Debug 类型，通过实验 driver 自动登记。两个示例都无 feature gate；运行时仍默认 `native/manual`，加载脚本不自动调用目标函数。生产项目的可选 feature 接入方式见使用指南。
+The current backend is **nightly specialization + GDB v2**, with no v1/LLDB
+compatibility layer. [examples/explicit.rs](examples/explicit.rs) shows `derive(Visualize)`
+plus explicit registration; [examples/demo.rs](examples/demo.rs) keeps `Debug` types and
+registers them through the experimental driver. Neither example is feature-gated; the
+runtime still defaults to `native`/`manual`, and loading the script does not call target
+functions on its own. The optional per-project feature setup is in the usage guide.
 
-## 快速开始
+## Quick start
 
 ```sh
 cargo build --example explicit
 rust-gdb -iex "add-auto-load-safe-path /absolute/path/dbg-visualizer/target/debug/examples/explicit" target/debug/examples/explicit
 ```
 
-将 safe-path 替换为实际二进制绝对路径，不使用 `*`。GDB 脚本由 runtime 自带并嵌入产物，消费项目不需要自己的 build.rs 或 Python 副本。
+Replace the safe-path with the binary's real absolute path; do not use `*`. The GDB
+script ships inside the runtime and is embedded into the artifact, so a consumer project
+needs no `build.rs` or Python copy of its own.
 
 ```text
 break explicit::checkpoint
@@ -31,15 +49,20 @@ dbgvis config execution automatic
 print point
 ```
 
-示例 `map` 输出：
+`map` renders as:
 
 ```text
 {"points": [Some(Point { x: 1, y: 2 }), None]}
 ```
 
-自包含 AppState 演示第三方字段、skip 和嵌套容器。另有三个 IndexMap 实例、hashbrown::HashMap、Bytes、SocketAddr、借用/const 泛型及无 Debug 的 ZST hasher。跨 crate 和 feature 开关验证由测试运行时生成临时项目，workspace 只保留三个核心 crate 加一个 xtask 验证入口。
+The self-contained `AppState` exercises third-party fields, `skip`, and nested
+containers. There are also three `IndexMap` instances, a `hashbrown::HashMap`, `Bytes`,
+`SocketAddr`, borrowed/const generics, and a ZST hasher with no `Debug`. Cross-crate and
+feature-toggle coverage is driven from temporary projects the test suite generates; the
+workspace keeps only the three core crates plus an `xtask` verification entry point.
 
-若要运行无需手写根登记的 `demo`，在仓库根目录执行（driver 要求 `rustc 1.99.0-nightly (12c36e253 2026-08-10)`）：
+To run `demo`, which needs no hand-written root registration, from the repository root
+(the driver requires `rustc 1.99.0-nightly (12c36e253 2026-08-10)`):
 
 ```sh
 cargo xtask driver
@@ -47,17 +70,31 @@ DBGVIS_AUTO_CRATE=demo RUSTC_WORKSPACE_WRAPPER="$PWD/tools/auto-register/wrapper
 rust-gdb -iex "add-auto-load-safe-path /absolute/path/dbg-visualizer/target/auto-register/examples/debug/examples/demo" target/auto-register/examples/debug/examples/demo
 ```
 
-断点为 `demo::checkpoint`，`run`、`up` 后用 `dbgvis p map` 或 `dbgvis p index_borrowed`。普通 `cargo build --example demo` 不启用 driver，不能据此期待这些根已登记。driver 默认只扫可执行目标自身；对「逻辑在 lib、main 只是入口」的布局，需要 `DBGVIS_SCAN_DEPS=1` 才能扫到库里的局部变量，代价是给 workspace 库加 `-Zalways-encode-mir` 并增加登记数量。细节见[两阶段自动注册实验](docs/自动注册可行性验证.md)。`dbgvis p -m native "hello"` 保留表达式引号；`--` 可结束打印选项。完整命令见 `dbgvis help`。
+Outside this repository, install the driver instead of using `cargo xtask`:
+`cargo install --path crates/cargo-dbgvis` (unpublished; from a checkout for now), then
+`cargo dbgvis setup` compiles it into a self-contained `DBGVIS_HOME` and `cargo dbgvis
+config <bin>` prints the `.cargo/config.toml` to point a project at it -- no repository on
+the build path. `cargo dbgvis doctor` checks the toolchain, rustc-dev, and the install.
 
-## 文档
+Break at `demo::checkpoint`, then after `run`, `up` use `dbgvis p map` or
+`dbgvis p index_borrowed`. A plain `cargo build --example demo` does not enable the
+driver, so do not expect those roots to be registered from it. The driver scans only the
+executable's own functions by default; for a "logic in a library, `main` is just an entry
+point" layout, `DBGVIS_SCAN_DEPS=1` is needed to reach a library's locals, at the cost of
+building the workspace libraries with `-Zalways-encode-mir` and registering more types.
+Details in the [two-pass auto-registration experiment](docs/自动注册可行性验证.md).
+`dbgvis p -m native "hello"` keeps the expression's quotes; `--` ends the print options.
+See `dbgvis help` for the full command set.
 
-- [使用指南](docs/使用指南.md)：接入 API、feature 开关、GDB 命令与安全边界。
-- [协议 v2](docs/协议-v2.md)：注册、mailbox 与有界文本。
-- [第二阶段验收记录](docs/第二阶段验收记录.md)：实际测试、已知限制和未完成项。
-- [Q0 技术验证](docs/archive/Q0技术验证.md)：为何采用 nightly（归档，工具链决策已定）。
-- [两阶段自动注册实验](docs/自动注册可行性验证.md)：无需逐类型手写登记的 driver 原型、验证方法与已知限制（可选，不改变默认构建）。
+## Documentation
 
-## 验证
+- [Usage guide](docs/使用指南.md): the integration API, feature toggles, GDB commands, and safety boundaries.
+- [Protocol v2](docs/协议-v2.md): registration, the mailbox, and bounded text.
+- [Phase-two acceptance record](docs/第二阶段验收记录.md): actual tests, known limits, and open items.
+- [Q0 validation](docs/archive/Q0技术验证.md): why nightly (archived; the toolchain decision is settled).
+- [Two-pass auto-registration experiment](docs/自动注册可行性验证.md): the driver prototype that removes per-type hand registration, its validation, and known limits (optional; it does not change the default build).
+
+## Verification
 
 ```sh
 cargo fetch --locked
@@ -69,6 +106,17 @@ cargo xtask integration --faults --lto --relocated
 cargo xtask autoregister --gdb
 ```
 
-当前验证环境为 Linux x86_64、GDB 17.1、rustc 1.99.0-nightly (12c36e253 2026-08-10)。集成测试需要本地 ptrace 权限；在 macOS 等非 Linux 平台上该套件直接跳过（Apple/MSVC 目标不生成 `.debug_gdb_scripts`），其余四步照常运行。调试构建必须保留 `debug = 2` 且不 strip，否则嵌入脚本与 anchor 类型信息都会消失。自动分派遇到三者皆无的值输出 `<unformattable 类型名>` 占位而不是编译失败；显式 `via`/根模式仍在编译期检查。
+The verified environment is Linux x86_64, GDB 17.1, rustc 1.99.0-nightly
+(12c36e253 2026-08-10). The integration suite needs local ptrace permission; on non-Linux
+platforms such as macOS it is skipped outright (Apple/MSVC targets do not emit
+`.debug_gdb_scripts`), while the other four steps run as usual. A debug build must keep
+`debug = 2` and stay unstripped, or the embedded script and anchor type information both
+disappear. Automatic selection renders a value with none of the three capabilities as a
+`<unformattable TypeName>` placeholder instead of failing compilation; explicit `via` and
+root modes are still checked at compile time.
 
-有界缓冲区不保证用户 fmt 纯、无分配或不阻塞。core dump 和无法可靠定位的值只能走 native。核心已经实现；`cargo-dbgvis setup/doctor/uninstall` 与完整发布演练尚未实现，crate 尚未发布。
+The bounded buffer does not guarantee a user `fmt` is pure, allocation-free, or
+non-blocking. Core dumps and values that cannot be located reliably fall back to native.
+The core is implemented, and `cargo-dbgvis` (`setup`/`doctor`/`config`/`uninstall`)
+installs and manages the experimental driver outside the repository; a full release
+dry-run is not done, and the crates are unpublished.

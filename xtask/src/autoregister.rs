@@ -281,7 +281,101 @@ dv = {{ package = "dbgvis", path = "{facade}", features = ["derive"] }}
     same_name_lib_and_bin()?;
     dependency_reexports()?;
     indirect_dependency()?;
+    installed_home()?;
     println!("AUTO_COMPILER_CONTRACTS_OK");
+    Ok(())
+}
+
+/// The `cargo dbgvis` installation path: a consumer that never clones the repository.
+/// `setup` writes the wrapper and driver into a `DBGVIS_HOME` and compiles the driver
+/// there; a project pointed at that home must auto-register with nothing from the repo
+/// checkout on its `RUSTC_WORKSPACE_WRAPPER` path.
+fn installed_home() -> Result {
+    let scratch = TempDir::new("dbgvis install ")?;
+    let home = scratch.path().join("home");
+    // Run the real `cargo dbgvis setup` with this home; it embeds the sources and
+    // compiles the driver.
+    Run::new("cargo")
+        .args([
+            "run",
+            "--offline",
+            "--quiet",
+            "-p",
+            "cargo-dbgvis",
+            "--",
+            "dbgvis",
+            "setup",
+        ])
+        .env("DBGVIS_HOME", &home)
+        .timeout(600)
+        .marker("installed to")
+        .check()?;
+    for name in ["wrapper.py", "driver.rs", "driver"] {
+        ensure!(home.join(name).exists(), "setup did not produce {name}");
+    }
+
+    // A project whose wrapper is the installed one and whose DBGVIS_HOME is the install.
+    let project = scratch.path().join("app");
+    let facade = root().join("crates/dbgvis").display().to_string();
+    write(
+        project.join("Cargo.toml"),
+        &format!(
+            r#"[package]
+name = "installed_app"
+version = "0.0.0"
+edition = "2024"
+[workspace]
+[dependencies]
+dv = {{ package = "dbgvis", path = "{facade}", features = ["derive"] }}
+[profile.dev]
+debug = 2
+"#
+        ),
+    )?;
+    write(
+        project.join("src/main.rs"),
+        r#"
+#[derive(Debug)] struct Cfg { retries: u32 }
+fn main() {
+    dv::enable!();
+    let cfg = Cfg { retries: 3 };
+    std::hint::black_box(&cfg);
+    println!("INSTALLED_EXECUTED");
+}
+"#,
+    )?;
+    // Only DBGVIS_HOME + the installed wrapper; nothing from the repo tools dir.
+    let target = root().join("target/auto-register/installed");
+    let output = Run::new("cargo")
+        .args(["build", "--offline"])
+        .cwd(&project)
+        .env("RUSTC_WORKSPACE_WRAPPER", home.join("wrapper.py"))
+        .env("DBGVIS_HOME", &home)
+        .env("DBGVIS_AUTO_CRATE", "installed_app")
+        .env("CARGO_TARGET_DIR", &target)
+        .timeout(600)
+        .output()?;
+    ensure!(
+        output.contains("dbgvis auto: scan installed_app"),
+        "the installed wrapper must drive the scan\n{output}"
+    );
+    // The plan lands under the install home, not the repo.
+    let plans = home.join("plans");
+    let has_plan = std::fs::read_dir(&plans)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("installed_app-")
+            })
+        })
+        .unwrap_or(false);
+    ensure!(has_plan, "the plan must live under DBGVIS_HOME/plans");
+    Run::new(target.join("debug/installed_app"))
+        .marker("INSTALLED_EXECUTED")
+        .timeout(30)
+        .check()?;
+    println!("AUTO_INSTALLED_HOME_OK");
     Ok(())
 }
 

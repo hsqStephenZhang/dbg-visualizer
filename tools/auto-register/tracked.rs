@@ -2,6 +2,5 @@
 concat!(
     include_str!("driver.rs"),
     include_str!("wrapper.py"),
-    include_str!("../../xtask/src/autoregister.rs"),
     env!("DBGVIS_AUTO_CRATE"),
 )

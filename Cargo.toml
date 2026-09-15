@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["crates/dbgvis-runtime", "crates/dbgvis", "crates/dbgvis-macros", "xtask"]
+members = ["crates/dbgvis-runtime", "crates/dbgvis", "crates/dbgvis-macros", "crates/cargo-dbgvis", "xtask"]
 resolver = "2"
 
 [dependencies]

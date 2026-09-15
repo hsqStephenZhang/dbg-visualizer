@@ -9,15 +9,32 @@ import sys
 import tempfile
 import time
 
-ROOT = Path(__file__).resolve().parents[2]
-DRIVER = ROOT / "target/auto-register/driver"
 EXPECTED = "rustc 1.99.0-nightly (12c36e253 2026-08-10)"
-# The driver must be newer than every input that defines it.
-TRACKED = (
-    Path(__file__).resolve(),
-    Path(__file__).resolve().with_name("driver.rs"),
-    ROOT / "xtask/src/autoregister.rs",
-)
+
+
+def _install():
+    """Where the driver, its sources and the scan plans live.
+
+    Installed (`cargo dbgvis setup`): a self-contained DBGVIS_HOME holds the wrapper,
+    driver source and the compiled driver together. In the dbgvis repository itself,
+    with DBGVIS_HOME unset, fall back to the checkout layout so `cargo xtask` keeps
+    working. Returns (driver binary, tool dir with the sources, plans dir).
+    """
+    home = os.environ.get("DBGVIS_HOME")
+    if home:
+        home = Path(home)
+        return home / "driver", home, home / "plans"
+    repo = Path(__file__).resolve().parents[2]
+    return (repo / "target/auto-register/driver",
+            Path(__file__).resolve().parent,
+            repo / "target/auto-register/plans")
+
+
+DRIVER, TOOL_DIR, PLANS = _install()
+# The driver must be newer than every input that defines it: this wrapper and the
+# driver source. A vendored install may not ship a source next to the wrapper; the
+# staleness check below skips what is absent.
+TRACKED = (Path(__file__).resolve(), TOOL_DIR / "driver.rs")
 
 
 def checked_output(args):
@@ -97,7 +114,7 @@ def main():
     if not name or is_probe(args):
         return subprocess.call([rustc, *args], close_fds=False)
     if not DRIVER.exists():
-        sys.exit("Build the experiment first: cargo xtask driver")
+        sys.exit("driver not built: run `cargo dbgvis setup` (or `cargo xtask driver` in the dbgvis repo)")
     actual = checked_output([rustc, "--version"])
     if actual != EXPECTED:
         sys.exit(f"Unsupported driver toolchain: {actual}; expected {EXPECTED}")
@@ -107,13 +124,13 @@ def main():
     tracked = [p for p in TRACKED if p.exists()]
     newest = max(p.stat().st_mtime_ns for p in tracked)
     if DRIVER.stat().st_mtime_ns < newest:
-        sys.exit("Driver is stale; run cargo xtask driver")
+        sys.exit("driver is stale: run `cargo dbgvis setup` (or `cargo xtask driver` in the dbgvis repo)")
     sysroot = checked_output([rustc, "--print", "sysroot"])
     args += ["--sysroot", sysroot] if option(args, "--sysroot") is None else []
     env = os.environ.copy()
     env.pop("DBGVIS_INJECT", None)
     env.pop("DBGVIS_PASSTHROUGH", None)
-    env["DBGVIS_TOOL_DIR"] = str(Path(__file__).parent)
+    env["DBGVIS_TOOL_DIR"] = str(TOOL_DIR)
     # Scanning dependency crates is opt-in: DBGVIS_SCAN_DEPS=1 also reads the named
     # variables of the workspace libraries. It is off by default because it is not
     # free -- it keeps the libraries' MIR with `-Zalways-encode-mir`, and every local
@@ -163,7 +180,7 @@ def main():
         env["DBGVIS_PASSTHROUGH"] = "1"
         return subprocess.call([str(DRIVER), *args], env=env, close_fds=False)
     digest = hashlib.sha256((str(Path.cwd()) + repr(args)).encode()).hexdigest()[:20]
-    directory = ROOT / "target/auto-register/plans" / f"{selected}-{digest}"
+    directory = PLANS / f"{selected}-{digest}"
     directory.mkdir(parents=True, exist_ok=True)
     plan = directory / "register.rs"
     env["DBGVIS_PLAN"] = str(plan)

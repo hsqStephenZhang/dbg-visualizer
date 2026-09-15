@@ -1,0 +1,10 @@
+[package]
+name = "cargo-dbgvis"
+version = "0.2.0"
+edition = "2021"
+description = "Install and manage the experimental dbgvis auto-registration driver."
+publish = false
+
+[[bin]]
+name = "cargo-dbgvis"
+path = "src/main.rs"

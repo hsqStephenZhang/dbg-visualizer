@@ -45,11 +45,7 @@ fn track_wrapper_inputs(config: &mut rustc_interface::interface::Config) {
             ));
         }
         let directory = PathBuf::from(std::env::var_os("DBGVIS_TOOL_DIR").expect("tool directory"));
-        for path in [
-            directory.join("wrapper.py"),
-            directory.join("driver.rs"),
-            directory.join("../../xtask/src/autoregister.rs"),
-        ] {
+        for path in [directory.join("wrapper.py"), directory.join("driver.rs")] {
             // A dep-info entry naming a file that does not exist makes Cargo treat
             // every unit as dirty forever, so a vendored wrapper shipped without the
             // whole checkout must lose the tracking rather than the caching.
