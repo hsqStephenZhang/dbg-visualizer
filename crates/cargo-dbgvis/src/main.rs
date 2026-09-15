@@ -64,16 +64,25 @@ fn rustc_version() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
+fn sysroot() -> Result<PathBuf, String> {
+    let out = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .map_err(|error| format!("cannot run rustc: {error}"))?;
+    if !out.status.success() {
+        return Err("rustc --print sysroot failed".into());
+    }
+    Ok(PathBuf::from(
+        String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+    ))
+}
+
 /// Whether the active toolchain carries rustc-dev (the `rustc_*` crates the driver
 /// links). Absence is the most common setup failure, so name it precisely.
 fn has_rustc_dev() -> bool {
-    let Ok(out) = Command::new("rustc").args(["--print", "sysroot"]).output() else {
+    let Ok(sysroot) = sysroot() else {
         return false;
     };
-    if !out.status.success() {
-        return false;
-    }
-    let sysroot = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_owned());
     // librustc_driver ships only with the rustc-dev component.
     let libdir = sysroot.join("lib/rustlib").join(host_triple()).join("lib");
     fs::read_dir(&libdir)
@@ -124,13 +133,15 @@ fn not_nightly_help(version: &str) -> String {
     )
 }
 
-/// The driver source would not compile against the active nightly: its rustc-internal
-/// API has drifted. Printed after rustc's own errors.
+/// The driver would not build against the active nightly. Printed after rustc's own
+/// error, which is the authoritative detail (a rustc_private API mismatch, or a linker
+/// error if the toolchain's LLVM/rustc-dev libraries are incomplete).
 fn compile_failed_help(version: &str) -> String {
     format!(
-        "the driver did not compile against {version}.\n\
-         this nightly's internal rustc_private API differs from what the driver expects.\n\
-         use the last-verified nightly instead:\n\
+        "the driver did not build against {version} (see the error above).\n\
+         if it is a linker error, this toolchain's rustc-dev/LLVM libraries may be\n\
+         incomplete; otherwise its internal rustc_private API has drifted. either way,\n\
+         the last-verified nightly is known to work:\n\
          {}",
         suggest_tested()
     )
@@ -173,11 +184,21 @@ fn setup() -> Result<(), String> {
     write("tracked.rs", TRACKED_RS)?;
     make_executable(&wrapper)?;
 
-    // Compile the driver next to its sources.
+    // Compile the driver next to its sources. rustc_driver.so pulls in the LLVM shared
+    // library, which lives in `<sysroot>/lib` -- not the rustlib target lib dir the
+    // linker already searches -- so add it to both the link search path (`-L`) and the
+    // runtime rpath. Some toolchains also copy libLLVM into rustlib and link without
+    // this, but many do not, so make the driver self-sufficient regardless.
+    let libdir = sysroot()?.join("lib");
     let driver = home.join("driver");
     let status = Command::new("rustc")
         .arg(home.join("driver.rs"))
-        .args(["--edition=2024", "-C", "rpath=yes", "-D", "warnings", "-o"])
+        .args(["--edition=2024", "-C", "rpath=yes"])
+        .arg("-L")
+        .arg(&libdir)
+        .arg("-C")
+        .arg(format!("link-arg=-Wl,-rpath,{}", libdir.display()))
+        .args(["-D", "warnings", "-o"])
         .arg(&driver)
         .status()
         .map_err(|error| format!("compile driver: {error}"))?;

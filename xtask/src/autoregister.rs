@@ -71,9 +71,18 @@ pub fn build_driver() -> Result {
     std::fs::create_dir_all(&dir)
         .map_err(|error| Failure(format!("mkdir driver target: {error}")))?;
     let output = dir.join("driver");
+    // rustc_driver.so needs the LLVM shared library from `<sysroot>/lib`; add it to the
+    // link search path and the runtime rpath (see cargo-dbgvis setup for why).
+    let sysroot = Run::new("rustc").args(["--print", "sysroot"]).output()?;
+    let libdir = Path::new(sysroot.trim()).join("lib");
     Run::new("rustc")
         .arg(tools().join("driver.rs"))
-        .args(["--edition=2024", "-C", "rpath=yes", "-D", "warnings", "-o"])
+        .args(["--edition=2024", "-C", "rpath=yes"])
+        .arg("-L")
+        .arg(&libdir)
+        .arg("-C")
+        .arg(format!("link-arg=-Wl,-rpath,{}", libdir.display()))
+        .args(["-D", "warnings", "-o"])
         .arg(&output)
         .timeout(600)
         .check()?;
