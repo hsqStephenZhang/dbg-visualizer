@@ -88,17 +88,17 @@ driver, so do not expect those roots to be registered from it. The driver scans 
 executable's own functions by default; for a "logic in a library, `main` is just an entry
 point" layout, `DBGVIS_SCAN_DEPS=1` is needed to reach a library's locals, at the cost of
 building the workspace libraries with `-Zalways-encode-mir` and registering more types.
-Details in the [two-pass auto-registration experiment](docs/自动注册可行性验证.md).
+Details in the [two-pass auto-registration experiment](docs/auto-registration-experiment.md).
 `dbgvis p -m native "hello"` keeps the expression's quotes; `--` ends the print options.
 See `dbgvis help` for the full command set.
 
 ## Documentation
 
-- [Usage guide](docs/使用指南.md): the integration API, feature toggles, GDB commands, and safety boundaries.
-- [Protocol v2](docs/协议-v2.md): registration, the mailbox, and bounded text.
-- [Phase-two acceptance record](docs/第二阶段验收记录.md): actual tests, known limits, and open items.
-- [Q0 validation](docs/archive/Q0技术验证.md): why nightly (archived; the toolchain decision is settled).
-- [Two-pass auto-registration experiment](docs/自动注册可行性验证.md): the driver prototype that removes per-type hand registration, its validation, and known limits (optional; it does not change the default build).
+- [Usage guide](docs/usage-guide.md): the integration API, feature toggles, GDB commands, and safety boundaries.
+- [Protocol v2](docs/protocol-v2.md): registration, the mailbox, and bounded text.
+- [Phase-two acceptance record](docs/phase-two-acceptance.md): actual tests, known limits, and open items.
+- [Q0 validation](docs/archive/q0-validation.md): why nightly (archived; the toolchain decision is settled).
+- [Two-pass auto-registration experiment](docs/auto-registration-experiment.md): the driver prototype that removes per-type hand registration, its validation, and known limits (optional; it does not change the default build).
 
 ## Verification
 
