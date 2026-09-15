@@ -12,6 +12,24 @@ import time
 EXPECTED = "rustc 1.99.0-nightly (12c36e253 2026-08-10)"
 
 
+def _toolchain_help(actual):
+    """Why `actual` is not the pinned compiler, and the command that fixes it.
+
+    Separates "a nightly, but the wrong build" (a date mismatch) from "not a
+    nightly at all" (a channel mismatch); both need the exact pinned build.
+    """
+    date = EXPECTED.rsplit(" ", 1)[-1].rstrip(")")
+    toolchain = f"nightly-{date}"
+    lead = ("this is a nightly build, but not the exact one the driver was built against"
+            if "-nightly" in actual
+            else "this is not a nightly toolchain; the driver needs a pinned nightly")
+    return (f"dbgvis auto: unsupported toolchain -- {lead}.\n"
+            f"  expected {EXPECTED}\n"
+            f"  got      {actual}\n"
+            f"  rustup toolchain install {toolchain} --component rustc-dev\n"
+            f"  cargo +{toolchain} dbgvis setup")
+
+
 def _install():
     """Where the driver, its sources and the scan plans live.
 
@@ -117,7 +135,7 @@ def main():
         sys.exit("driver not built: run `cargo dbgvis setup` (or `cargo xtask driver` in the dbgvis repo)")
     actual = checked_output([rustc, "--version"])
     if actual != EXPECTED:
-        sys.exit(f"Unsupported driver toolchain: {actual}; expected {EXPECTED}")
+        sys.exit(_toolchain_help(actual))
     # Track these inputs in every compilation, including passthrough libraries.
     # A vendored wrapper may not ship the whole checkout: skip what is absent
     # rather than raising a traceback on every rustc invocation.

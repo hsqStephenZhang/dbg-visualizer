@@ -85,6 +85,38 @@ fn has_rustc_dev() -> bool {
         .unwrap_or(false)
 }
 
+/// The nightly the driver was built against, spelled as a rustup toolchain name.
+/// Derived from EXPECTED_RUSTC's trailing `(<hash> <date>)` so the two never drift.
+fn expected_toolchain() -> String {
+    EXPECTED_RUSTC
+        .rsplit_once(' ')
+        .and_then(|(_, tail)| tail.strip_suffix(')'))
+        .map(|date| format!("nightly-{date}"))
+        .unwrap_or_else(|| "nightly".to_owned())
+}
+
+/// Explain why `version` is not the compiler the driver needs, and give the exact,
+/// copyable commands that fix it. Distinguishes "a nightly, but the wrong build" from
+/// "not a nightly at all" -- the first is a date mismatch, the second a channel one.
+fn toolchain_help(version: &str) -> String {
+    let toolchain = expected_toolchain();
+    let install = format!("rustup toolchain install {toolchain} --component rustc-dev");
+    let run = format!("cargo +{toolchain} dbgvis setup");
+    let lead = if version.contains("-nightly") {
+        "this is a nightly build, but not the exact one the driver was written against"
+    } else {
+        "this is not a nightly toolchain; the driver needs a pinned nightly"
+    };
+    format!(
+        "{lead}.\n\
+         \x20 expected {EXPECTED_RUSTC}\n\
+         \x20 got      {version}\n\
+         install that build and run setup under it:\n\
+         \x20 {install}\n\
+         \x20 {run}"
+    )
+}
+
 fn host_triple() -> String {
     // `rustc -vV` reports the host triple; used to find the rustc-dev lib dir.
     Command::new("rustc")
@@ -102,12 +134,7 @@ fn host_triple() -> String {
 fn setup() -> Result<(), String> {
     let version = rustc_version()?;
     if version != EXPECTED_RUSTC {
-        return Err(format!(
-            "unsupported toolchain: {version}\n\
-             the driver requires exactly {EXPECTED_RUSTC} with rustc-dev.\n\
-             install it, e.g. `rustup toolchain install nightly-2026-08-10 --component rustc-dev`,\n\
-             and run `cargo dbgvis setup` under that toolchain (rustup override or +toolchain)."
-        ));
+        return Err(toolchain_help(&version));
     }
     if !has_rustc_dev() {
         return Err("rustc-dev is not installed for the active toolchain\n\
@@ -188,7 +215,9 @@ fn doctor() -> Result<(), String> {
         Ok(version) => {
             ok &= check("toolchain", version == EXPECTED_RUSTC, &version);
             if version != EXPECTED_RUSTC {
-                println!("      expected {EXPECTED_RUSTC}");
+                for line in toolchain_help(&version).lines() {
+                    println!("      {line}");
+                }
             }
         }
         Err(error) => ok &= check("toolchain", false, &error),
