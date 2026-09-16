@@ -11,9 +11,13 @@ It drives the process through the exact same exported mailbox the GDB bridge
 uses (`DBG_VIS_MODULE_V2` + a dispatcher function pointer + request/response/output
 buffers), so the Rust runtime needs no LLDB-specific support.
 """
+import os
 import re
 import shlex
 import struct
+import subprocess
+import sys
+import tempfile
 
 import lldb
 
@@ -87,6 +91,7 @@ _PRIMITIVES = [
     ("unsigned int", "u32"), ("int", "i32"),
     ("unsigned short", "u16"), ("short", "i16"),
     ("unsigned char", "u8"), ("signed char", "i8"),
+    ("void", "()"),  # LLDB spells the Rust unit type `()` as `void`
 ]
 
 
@@ -105,7 +110,7 @@ def _canonical(name):
         name = name.replace(default, "")
     for c_name, rust in _PRIMITIVES:
         name = re.sub(r"\b" + re.escape(c_name) + r"\b", rust, name)
-    name = re.sub(r"([^\s,<>]+(?:<[^\[\]]*>)?) \[(\d+)\]", r"[\1; \2]", name)  # T [N] -> [T; N]
+    name = re.sub(r"([^\s,<>]+(?:<[^\[\]]*>)?) ?\[(\d+)\]", r"[\1; \2]", name)  # T[N]/T [N] -> [T; N]
     name = re.sub(r"'\w+", "", name)                       # drop lifetimes
     name = re.sub(r"(?<=[<,])\s*\d+\s*(?=[,>])", "", name)  # drop const-generic ints
     name = re.sub(r"\s+", " ", name)
@@ -185,8 +190,8 @@ def _match(entries, value):
                 + "\n  registered: " + ", ".join(sorted(e["name"] for e in entries)))
 
 
-def render(target, process, frame, value, overrides):
-    module, entries = discover(target, process, frame)
+def render(target, process, frame, value, overrides, discovered=None):
+    module, entries = discovered if discovered else discover(target, process, frame)
     entry, address = _match(entries, value)
     options = dict(DEFAULTS)
     options.update(overrides)
@@ -234,8 +239,13 @@ def render(target, process, frame, value, overrides):
 
 
 def _parse(command):
-    """Split `[-m MODE] [-b BYTES] [-a] [--] EXPR` like the GDB command."""
+    """Split `[--all] [--no-pager] [-m MODE] [-b BYTES] [-a] [--] EXPR`.
+
+    `--all` renders every registered local in the frame instead of one EXPR.
+    Returns (render overrides, control flags, EXPR-or-None).
+    """
     overrides = {}
+    control = {"all": False, "pager": True}
     tokens = shlex.split(command)
     i = 0
     while i < len(tokens):
@@ -243,7 +253,13 @@ def _parse(command):
         if token == "--":
             i += 1
             break
-        if token in ("-m", "--mode"):
+        if token == "--all":
+            control["all"] = True
+            i += 1
+        elif token == "--no-pager":
+            control["pager"] = False
+            i += 1
+        elif token in ("-m", "--mode"):
             value = tokens[i + 1]
             if value not in {"native", *MODES}:
                 raise Error("invalid mode: " + value)
@@ -260,30 +276,83 @@ def _parse(command):
         else:
             break
     expr = " ".join(tokens[i:]).strip()
-    if not expr:
-        raise Error("missing variable expression")
-    return overrides, expr
+    if not control["all"] and not expr:
+        raise Error("missing variable expression (or pass --all)")
+    return overrides, control, (expr or None)
+
+
+def _evaluate(frame, expr):
+    """Resolve EXPR to a value. LLDB's Rust expression evaluator is unreliable (it
+    falls back to C/ObjC++ and fails on plain locals), so read DWARF locals and
+    `a.b`/`a[0]` paths directly first, and only fall back to a full evaluation."""
+    value = frame.GetValueForVariablePath(expr)
+    if not value or not value.IsValid():
+        value = frame.EvaluateExpression(expr)
+    if not value or not value.IsValid() or not value.GetError().Success():
+        detail = value.GetError().GetCString() if value else "not found"
+        raise Error("cannot evaluate `" + expr + "`: " + (detail or "not found"))
+    return value
+
+
+def render_all(target, process, frame, overrides):
+    """Render every in-scope local whose type is registered, one per entry.
+
+    Discovery runs once and is shared; a local whose type is not registered (or
+    is ambiguous to LLDB) is listed at the end rather than raising, so one bad
+    local never hides the rest."""
+    discovered = discover(target, process, frame)
+    variables = frame.GetVariables(True, True, False, True)  # args + locals, in scope
+    shown, skipped = [], []
+    for value in variables:
+        name = value.GetName() or "<anon>"
+        try:
+            shown.append(f"{name} = {render(target, process, frame, value, overrides, discovered)}")
+        except Error as error:
+            skipped.append(f"{name}: {str(error).splitlines()[0]}")
+    lines = shown or ["no registered locals in this frame"]
+    if skipped:
+        lines.append("")
+        lines.append(f"skipped {len(skipped)}:")
+        lines.extend("  " + s for s in skipped)
+    return "\n".join(lines)
+
+
+def _emit(result, text, pager):
+    """Print `text`, paging it through $PAGER when asked and a terminal is present.
+    Falls back to the debugger's own output when there is no TTY or the pager fails."""
+    if pager and sys.stdin.isatty() and sys.stdout.isatty():
+        command = os.environ.get("PAGER") or "less -R -F -X"
+        path = None
+        try:
+            with tempfile.NamedTemporaryFile("w", suffix=".dbgvis", delete=False) as handle:
+                handle.write(text + "\n")
+                path = handle.name
+            subprocess.call(shlex.split(command) + [path])
+            return
+        except Exception:
+            pass  # fall through to inline output
+        finally:
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+    result.AppendMessage(text)
 
 
 def dbgvis(debugger, command, exe_ctx, result, internal_dict):
     try:
-        overrides, expr = _parse(command)
+        overrides, control, expr = _parse(command)
         frame = exe_ctx.GetFrame()
         if not frame or not frame.IsValid():
             raise Error("no stopped frame; run to a breakpoint first")
-        # LLDB's Rust expression evaluator is unreliable (it falls back to C/ObjC++
-        # and fails on plain locals). GetValueForVariablePath reads DWARF locals and
-        # `a.b`/`a[0]` paths directly, without the expression compiler; fall back to a
-        # full evaluation only for expressions it cannot parse.
-        value = frame.GetValueForVariablePath(expr)
-        if not value or not value.IsValid():
-            value = frame.EvaluateExpression(expr)
-        if not value or not value.IsValid() or not value.GetError().Success():
-            detail = value.GetError().GetCString() if value else "not found"
-            raise Error("cannot evaluate `" + expr + "`: " + (detail or "not found"))
-        process = exe_ctx.GetProcess()
-        target = exe_ctx.GetTarget()
-        result.AppendMessage(render(target, process, frame, value, overrides))
+        target, process = exe_ctx.GetTarget(), exe_ctx.GetProcess()
+        if control["all"]:
+            text = render_all(target, process, frame, overrides)
+            _emit(result, text, control["pager"])
+        else:
+            value = _evaluate(frame, expr)
+            result.AppendMessage(render(target, process, frame, value, overrides))
     except Error as error:
         result.SetError(str(error))
 
@@ -306,10 +375,12 @@ def __lldb_init_module(debugger, internal_dict):
     module = __name__
     debugger.HandleCommand(f"command script add -o -f {module}.dbgvis dbgvis-print")
     debugger.HandleCommand(f"command script add -o -f {module}.dbgvis_types dbgvis-types")
-    # Convenience: `dbgvis` regex command dispatching `print`/`p`/`types`/`t`.
+    # Convenience: `dbgvis` regex command dispatching print/p, all/a, types/t.
     debugger.HandleCommand(
         "command regex dbgvis "
+        "'s/^(all|a)$/dbgvis-print --all/' "
+        "'s/^(all|a) +(.+)$/dbgvis-print --all %2/' "
         "'s/^(print|p) +(.+)$/dbgvis-print %2/' "
         "'s/^(types|t)$/dbgvis-types/'"
     )
-    print("dbgvis: LLDB bridge loaded (dbgvis print EXPR | dbgvis types)")
+    print("dbgvis: LLDB bridge loaded (dbgvis print EXPR | dbgvis all | dbgvis types)")
