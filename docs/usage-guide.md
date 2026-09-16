@@ -141,7 +141,7 @@ dbgvis print --buffer 32 --alternate app
 dbgvis status
 ```
 
-Common commands support short aliases: `p`/`print`, `c`/`config`, `t`/`types`, `s`/`status`, `rf`/`refresh`, `rs`/`reset`. The options of `print` also support `-m` (`--mode`), `-b` (`--buffer`), and `-a` (`--alternate`), for example `dbgvis p -m auto -b 128 -a app`; the mode names still require the full values such as `debug`, `display`.
+Common commands support short aliases: `p`/`print`, `c`/`config`, `t`/`types`, `s`/`status`, `rf`/`refresh`, `rs`/`reset`. The options of `print` also support `-m` (`--mode`), `-b` (`--buffer`), and `-a` (`--alternate`), for example `dbgvis p -m auto -b 128 -a app`; the mode names still require the full values such as `debug`, `display`. `dbgvis p --all` (alias `dbgvis all`) renders every in-scope local whose type is registered — one `name = value` per line — and lists any it skipped with the reason; GDB paginates the output on its own.
 
 When the effective configuration is native, an explicit print uses that entry's default mode instead; `--mode native` always uses the native display and allows unregistered types. `--mode auto` means the registered default mode: an attribute-free registration automatically selects Visualize > Debug > Display, while a registration with explicit capabilities selects only from the declared capabilities. Requesting an unregistered Debug/Display/Visualize is rejected before the target call.
 

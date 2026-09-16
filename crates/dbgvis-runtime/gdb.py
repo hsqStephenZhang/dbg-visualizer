@@ -32,6 +32,7 @@ HELP = """dbgvis print|p|-p [OPTIONS] [--] EXPR
   -m, --mode MODE     auto|visualize|debug|display|native
   -b, --buffer BYTES  output buffer size (also --buffer=BYTES / -b=BYTES)
   -a, --alternate     alternate formatting
+  --all               render every registered local in the frame (alias: dbgvis all)
   Options precede EXPR; expression quotes and escapes are passed unchanged to GDB.
 dbgvis config|c|-c [-t NAME | --type NAME] KEY VALUE
 dbgvis types|t|-t | status|s|-s | refresh|rf|-rf | reset|rs|-rs
@@ -59,14 +60,14 @@ def print_arguments(text):
             text = text[2:].lstrip()
             break
         option = head.split("=", 1)[0]
-        if option not in ("--mode", "-m", "--buffer", "-b", "--alternate", "-a"):
+        if option not in ("--mode", "-m", "--buffer", "-b", "--alternate", "-a", "--all"):
             if head.startswith("--"):
                 raise RuntimeError("unknown print option: " + head)
             break
-        if option in ("--alternate", "-a"):
+        if option in ("--alternate", "-a", "--all"):
             if "=" in head:
-                raise RuntimeError("alternate takes no value")
-            overrides["summary.alternate"] = True
+                raise RuntimeError(option + " takes no value")
+            overrides["_all" if option == "--all" else "summary.alternate"] = True
             text = text[len(head):]
             continue
         text = text[len(option):]
@@ -81,7 +82,7 @@ def print_arguments(text):
             overrides["summary.mode"] = value
         else:
             overrides["summary.buffer_bytes"] = int(value)
-    if not text.strip():
+    if not overrides.get("_all") and not text.strip():
         raise RuntimeError("missing variable expression")
     return overrides, text
 
@@ -361,6 +362,46 @@ class Session:
             self.last_error = str(error)
             return None
 
+    def summarize_all(self, overrides):
+        """Render every in-scope local whose type is registered, one per line.
+
+        Walks the selected frame's blocks up to (and including) the function
+        block, so it sees locals and arguments but not globals. A local that is
+        unregistered, ambiguous, or unreadable is listed under `skipped` rather
+        than aborting the rest. GDB paginates the returned text on its own.
+        """
+        frame = gdb.selected_frame()
+        self.discover()
+        block, seen, symbols = frame.block(), set(), []
+        while block is not None:
+            for symbol in block:
+                if (symbol.is_variable or symbol.is_argument) and symbol.name not in seen:
+                    seen.add(symbol.name)
+                    symbols.append(symbol)
+            if block.function is not None:
+                break
+            block = block.superblock
+        shown, skipped = [], []
+        for symbol in symbols:
+            try:
+                value = symbol.value(frame)
+                overrides_here = dict(overrides)
+                # `native` is the per-value `print` mode; --all always renders.
+                if overrides_here.get("summary.mode") == "native":
+                    overrides_here["summary.mode"] = "auto"
+                entry = self.match(value)
+                if self.options(entry, overrides_here)["summary.mode"] == "native":
+                    overrides_here["summary.mode"] = "auto"
+                shown.append(f"{symbol.name} = {self.summary(value, overrides_here)}")
+            except Exception as error:
+                skipped.append(f"{symbol.name}: {str(error).splitlines()[0]}")
+        lines = shown or ["no registered locals in this frame"]
+        if skipped:
+            lines.append("")
+            lines.append(f"skipped {len(skipped)}:")
+            lines.extend("  " + s for s in skipped)
+        return "\n".join(lines)
+
     def command(self, argument):
         parts = argument.lstrip().split(None, 1)
         if not parts or parts[0] in ("help", "h", "-h", "--help"):
@@ -368,10 +409,14 @@ class Session:
         command = parts[0]
         command = COMMAND_ALIASES.get(command, command)
         remainder = parts[1] if len(parts) == 2 else ""
+        if command in ("all", "a"):
+            command, remainder = "print", ("--all " + remainder).strip()
         if command == "print":
             if remainder.strip() in ("-h", "--help"):
                 return HELP
             overrides, expression = print_arguments(remainder)
+            if overrides.pop("_all", False):
+                return self.summarize_all(overrides)
             value = gdb.parse_and_eval(expression)
             if overrides.get("summary.mode") == "native":
                 return self.native(value)
