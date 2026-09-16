@@ -1,6 +1,6 @@
-# Usage Guide: nightly / GDB v2
+# Usage Guide: nightly / GDB v2 (+ experimental LLDB)
 
-This document describes the core API that is already implemented. Only Linux x86_64 local live processes and a single main-executable registry are supported. Enabling dbgvis requires nightly specialization; the v1 API, pagination, and the LLDB/CodeLLDB frontend are no longer provided. CLI installation and release are not yet implemented; see the [phase-two acceptance record](phase-two-acceptance.md) for unfinished items.
+This document describes the core API that is already implemented. Only Linux x86_64 local live processes and a single main-executable registry are supported. Enabling dbgvis requires nightly specialization; the v1 API and pagination are no longer provided. GDB is the primary frontend; an experimental LLDB bridge over the same mailbox is described in section 5 (the CodeLLDB frontend is not provided). CLI installation and release are not yet implemented; see the [phase-two acceptance record](phase-two-acceptance.md) for unfinished items.
 
 Root entries are collected automatically by linkme, so a consumer project only depends on dbgvis and does not need to depend on linkme directly.
 
@@ -169,7 +169,27 @@ Native children are kept, but no new logical child-value tree is generated; ther
 
 Use `dbgvis reset` to restore the configuration and `dbgvis refresh` to refresh metadata. Neither clears the poisoned state of a failed process. `status` shows the call count, cumulative duration, and most recent error; a single root text output calls the dispatcher only once, without pagination and without automatically growing the buffer to retry.
 
-## 5. Budget, lifetime, and failure boundary
+## 5. LLDB bridge (experimental)
+
+An experimental LLDB bridge drives the **same v2 mailbox** as the GDB script — the exported registry anchor, the request/response/output buffers, and the dispatcher function pointer — so the runtime needs no LLDB-specific support and a project changes nothing to use it. Unlike GDB, LLDB has no `.debug_gdb_scripts` auto-load, so the script is **not** embedded through `debugger_visualizer`; it is generated into the target directory and loaded by hand:
+
+```sh
+cargo dbgvis script --lldb          # writes target/dbgvis/lldb.py (use --gdb / --all for the others)
+```
+
+```text
+(lldb) command script import /absolute/path/to/target/dbgvis/lldb.py
+(lldb) dbgvis print app
+(lldb) dbgvis print map
+(lldb) dbgvis print -m debug address
+(lldb) dbgvis types
+```
+
+`dbgvis print EXPR` takes the same `-m` (`--mode`), `-b` (`--buffer`), and `-a` (`--alternate`) options as GDB, and `dbgvis types` lists the registered entries with their capabilities. The expression is read through LLDB's `GetValueForVariablePath`, which resolves `foo`, `foo.bar`, and `foo[0]` straight from DWARF; LLDB's own Rust expression evaluator is unreliable and is only a fallback.
+
+The bridge's one real limitation relative to GDB is **type matching**. The GDB script resolves a registered type's anchor symbol to a real debugger type and compares DWARF shape; LLDB exposes no type for a data symbol, so that route is unavailable. Instead the LLDB bridge reconciles LLDB's type names with the registry's Rust spellings: it maps C integer spellings (`unsigned int` → `u32`) and `T [N]` arrays back to Rust, and elides defaulted generic parameters (`Vec<T, Global>` → `Vec<T>`, the default `RandomState` hasher). Because LLDB's DWARF names also **drop lifetimes and const-generic arguments**, two registered types that differ only in those (for example `Borrowed<'_, Vec<u8>, Marker, 17>` and `…, 19>`) are indistinguishable to LLDB; the bridge reports them as ambiguous and refuses rather than matching the wrong slot and reinterpreting the value's bytes. Everything in section 6 (the in-process call, the bounded buffer, the poisoned-process boundary) applies unchanged.
+
+## 6. Budget, lifetime, and failure boundary
 
 The compiled default output area is 65536 bytes and can be adjusted to 1–16 MiB with `DBGVIS_BUFFER_BYTES=131072 cargo build --example explicit`. Each request writes UTF-8 into that area, transmits by length, and preserves NUL. Over the limit, it returns a valid prefix plus `<dbgvis: byte/depth/node limit>` or a cycle diagnostic, with no guarantee that brackets are closed. This text is not a serialization archive.
 
