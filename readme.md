@@ -21,8 +21,10 @@ The current backend is **nightly specialization + GDB v2**, with no v1 compatibi
 layer. An **experimental LLDB bridge** drives the same mailbox ABI: `cargo dbgvis script
 --lldb` writes `target/dbgvis/lldb.py`, which you load by hand (`command script import
 target/dbgvis/lldb.py`) since LLDB has no `.debug_gdb_scripts` auto-load. It reuses the
-runtime unchanged and offers `dbgvis print EXPR`; type matching is best-effort name
-reconciliation rather than the GDB bridge's DWARF-shape comparison.
+runtime unchanged and offers `dbgvis print EXPR`; type matching reconciles LLDB's type
+names with the registry's Rust spellings (LLDB gives no type for an anchor symbol, so the
+GDB bridge's DWARF-shape comparison is unavailable) and refuses types LLDB cannot tell
+apart, such as ones differing only by lifetime or const generic.
 [examples/explicit.rs](examples/explicit.rs) shows `derive(Visualize)`
 plus explicit registration; [examples/demo.rs](examples/demo.rs) keeps `Debug` types and
 registers them through the experimental driver. Neither example is feature-gated; the

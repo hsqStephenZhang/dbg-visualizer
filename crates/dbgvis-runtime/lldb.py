@@ -63,12 +63,14 @@ def _module_address(target, frame):
     raise Error("DBG_VIS_MODULE_V2 not found; is dbgvis linked into this target?")
 
 
-# The registry `name` is Rust's own type spelling; LLDB's DWARF names diverge in
-# two mechanical ways, reconciled here. This is best-effort: LLDB's type-name
-# rendering is not a total inverse of Rust's, so a robust bridge should match on
-# DWARF *shape* (as the GDB bridge does) rather than strings. Anchor symbols carry
-# no type in LLDB, which is why that route is unavailable and this heuristic stands.
-#
+# Matching reconciles the registry `name` (Rust's own type spelling) with LLDB's
+# DWARF type names, which diverge in several mechanical ways AND drop information
+# Rust keeps. `_canonical` reduces BOTH to the common form LLDB can actually see;
+# `_match` then treats two registry entries that collapse together as ambiguous
+# and refuses, rather than guessing -- picking the wrong slot would reinterpret the
+# value's bytes. LLDB exposes no type for an anchor symbol, so the GDB bridge's
+# DWARF-shape comparison is unavailable and this name reconciliation stands in.
+
 # 1. Defaulted generic parameters Rust elides but LLDB spells out in full. A
 #    non-default allocator or hasher is never one of these exact literals.
 _ELIDED_DEFAULTS = (
@@ -88,15 +90,33 @@ _PRIMITIVES = [
 ]
 
 
-def _normalize(name):
-    """An LLDB type name reduced toward Rust's own (default-eliding) spelling."""
+def _canonical(name):
+    """Reduce a Rust or LLDB type name to the common form LLDB can observe.
+
+    LLDB drops lifetimes and const-generic arguments and adds defaulted params and
+    C integer spellings; none of that is recoverable from DWARF. Stripping it from
+    both sides makes comparable names compare equal -- and makes types that differ
+    only in what LLDB drops (e.g. `Foo<_, 17>` vs `Foo<_, 19>`) collapse together,
+    which `_match` then reports as ambiguous instead of matching the wrong one.
+    """
     if not name:
         return name
     for default in _ELIDED_DEFAULTS:
         name = name.replace(default, "")
     for c_name, rust in _PRIMITIVES:
         name = re.sub(r"\b" + re.escape(c_name) + r"\b", rust, name)
-    return name
+    name = re.sub(r"([^\s,<>]+(?:<[^\[\]]*>)?) \[(\d+)\]", r"[\1; \2]", name)  # T [N] -> [T; N]
+    name = re.sub(r"'\w+", "", name)                       # drop lifetimes
+    name = re.sub(r"(?<=[<,])\s*\d+\s*(?=[,>])", "", name)  # drop const-generic ints
+    name = re.sub(r"\s+", " ", name)
+    for _ in range(3):  # tidy the empty argument slots the removals leave behind
+        name = re.sub(r"<\s*,\s*", "<", name)
+        name = re.sub(r"\s*,\s*>", ">", name)
+        name = re.sub(r",\s*,", ",", name)
+    name = re.sub(r"\s*<\s*", "<", name)
+    name = re.sub(r"\s*>", ">", name)
+    name = re.sub(r"\s*,\s*", ", ", name)
+    return name.strip()
 
 
 def discover(target, process, frame):
@@ -148,13 +168,19 @@ def _candidates(value):
 def _match(entries, value):
     names = {}
     for name, addr in _candidates(value):
-        key = _normalize(name)
+        key = _canonical(name)
         if key:
             names.setdefault(key, addr)
     size = value.GetType().GetByteSize()
-    for entry in entries:
-        if entry["name"] in names and (not size or entry["size"] == size):
-            return entry, names[entry["name"]]
+    hits = [(entry, names[_canonical(entry["name"])])
+            for entry in entries
+            if _canonical(entry["name"]) in names and (not size or entry["size"] == size)]
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        raise Error("ambiguous type; indistinguishable to LLDB (lifetimes and const "
+                    "generics are dropped from DWARF):\n  "
+                    + "\n  ".join(entry["name"] for entry, _ in hits))
     raise Error("unregistered type: " + (value.GetType().GetName() or "<unknown>")
                 + "\n  registered: " + ", ".join(sorted(e["name"] for e in entries)))
 
@@ -245,9 +271,16 @@ def dbgvis(debugger, command, exe_ctx, result, internal_dict):
         frame = exe_ctx.GetFrame()
         if not frame or not frame.IsValid():
             raise Error("no stopped frame; run to a breakpoint first")
-        value = frame.EvaluateExpression(expr)
-        if not value.GetError().Success():
-            raise Error("cannot evaluate `" + expr + "`: " + value.GetError().GetCString())
+        # LLDB's Rust expression evaluator is unreliable (it falls back to C/ObjC++
+        # and fails on plain locals). GetValueForVariablePath reads DWARF locals and
+        # `a.b`/`a[0]` paths directly, without the expression compiler; fall back to a
+        # full evaluation only for expressions it cannot parse.
+        value = frame.GetValueForVariablePath(expr)
+        if not value or not value.IsValid():
+            value = frame.EvaluateExpression(expr)
+        if not value or not value.IsValid() or not value.GetError().Success():
+            detail = value.GetError().GetCString() if value else "not found"
+            raise Error("cannot evaluate `" + expr + "`: " + (detail or "not found"))
         process = exe_ctx.GetProcess()
         target = exe_ctx.GetTarget()
         result.AppendMessage(render(target, process, frame, value, overrides))
