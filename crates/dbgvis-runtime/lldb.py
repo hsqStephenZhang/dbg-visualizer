@@ -1,0 +1,282 @@
+"""LLDB v2 bridge for dbgvis. Same mailbox ABI as gdb.py; loaded manually.
+
+Unlike GDB, LLDB has no `.debug_gdb_scripts` auto-load, so this script is not
+embedded via `#[debugger_visualizer]`. It is generated into the target directory
+and loaded by hand:
+
+    (lldb) command script import /path/to/target/dbgvis/lldb.py
+    (lldb) dbgvis print app
+
+It drives the process through the exact same exported mailbox the GDB bridge
+uses (`DBG_VIS_MODULE_V2` + a dispatcher function pointer + request/response/output
+buffers), so the Rust runtime needs no LLDB-specific support.
+"""
+import re
+import shlex
+import struct
+
+import lldb
+
+MODES = {"auto": 0, "visualize": 2, "debug": 4, "display": 8}
+DEFAULTS = {
+    "buffer_bytes": 4096,
+    "alternate": False,
+    "max_depth": 32,
+    "max_nodes": 4096,
+    "timeout_ms": 200,
+}
+STATUS = {
+    2: "UNSUPPORTED", 3: "INVALID", 4: "ABI_MISMATCH",
+    5: "BUSY", 6: "FORMAT_ERROR", 7: "PANIC", 8: "NOT_READY",
+}
+TRUNCATION = {1: "byte limit", 2: "depth limit", 3: "node limit", 4: "cycle"}
+
+
+class Error(Exception):
+    pass
+
+
+def _read(process, address, length):
+    err = lldb.SBError()
+    data = process.ReadMemory(address, length, err)
+    if not err.Success():
+        raise Error(f"read {length} bytes at 0x{address:x}: {err.GetCString()}")
+    return data
+
+
+def _text(process, pointer, length):
+    if length > 8192:
+        raise Error("metadata text exceeds limit")
+    return _read(process, pointer, length).decode("utf-8")
+
+
+def _module_address(target, frame):
+    """Load address of the exported registry anchor in the main executable."""
+    var = target.FindFirstGlobalVariable("DBG_VIS_MODULE_V2")
+    if var and var.IsValid():
+        addr = var.GetLoadAddress()
+        if addr != lldb.LLDB_INVALID_ADDRESS:
+            return addr
+    value = frame.EvaluateExpression("(unsigned long long)&DBG_VIS_MODULE_V2")
+    if value.GetError().Success():
+        return value.GetValueAsUnsigned()
+    raise Error("DBG_VIS_MODULE_V2 not found; is dbgvis linked into this target?")
+
+
+# The registry `name` is Rust's own type spelling; LLDB's DWARF names diverge in
+# two mechanical ways, reconciled here. This is best-effort: LLDB's type-name
+# rendering is not a total inverse of Rust's, so a robust bridge should match on
+# DWARF *shape* (as the GDB bridge does) rather than strings. Anchor symbols carry
+# no type in LLDB, which is why that route is unavailable and this heuristic stands.
+#
+# 1. Defaulted generic parameters Rust elides but LLDB spells out in full. A
+#    non-default allocator or hasher is never one of these exact literals.
+_ELIDED_DEFAULTS = (
+    ", alloc::alloc::Global",
+    ", hashbrown::alloc::inner::Global",
+    ", std::hash::random::RandomState",
+)
+# 2. Primitive integers LLDB renders with C spellings. Longest first so
+#    "unsigned long long" is consumed before "long". `usize`/`u64` share a C
+#    spelling; the size check in `_match` disambiguates.
+_PRIMITIVES = [
+    ("unsigned long long", "u64"), ("long long", "i64"),
+    ("unsigned long", "u64"), ("long", "i64"),
+    ("unsigned int", "u32"), ("int", "i32"),
+    ("unsigned short", "u16"), ("short", "i16"),
+    ("unsigned char", "u8"), ("signed char", "i8"),
+]
+
+
+def _normalize(name):
+    """An LLDB type name reduced toward Rust's own (default-eliding) spelling."""
+    if not name:
+        return name
+    for default in _ELIDED_DEFAULTS:
+        name = name.replace(default, "")
+    for c_name, rust in _PRIMITIVES:
+        name = re.sub(r"\b" + re.escape(c_name) + r"\b", rust, name)
+    return name
+
+
+def discover(target, process, frame):
+    """Parse the mailbox header and the registered entry table."""
+    address = _module_address(target, frame)
+    header = struct.unpack("<8s15Q", _read(process, address, 128))
+    if header[:8] != (b"DBGVIS02", 2, 128, 8, 1, 96, 80, 40):
+        raise Error("ABI_MISMATCH: requires dbgvis v2, 64-bit little-endian")
+    if header[8] != 1:
+        raise Error("registry not enabled yet; stop after dbgvis::enable!")
+    count, base = header[10], header[9]
+    if not 0 <= count <= 4096 or not 0 < header[14] <= 16 * 1024 * 1024:
+        raise Error("invalid registry bounds")
+    entries = []
+    for slot in range(count):
+        row = struct.unpack("<12Q", _read(process, base + slot * 96, 96))
+        entries.append(dict(
+            slot=slot,
+            name=_text(process, row[0], row[1]),
+            anchor=_text(process, row[2], row[3]),
+            size=row[4], align=row[5], capabilities=row[6], default=row[7],
+        ))
+    module = dict(request=header[11], response=header[12], output=header[13],
+                  capacity=header[14], dispatcher=header[15])
+    return module, entries
+
+
+def _candidates(value):
+    """(type name, object address) pairs to try against the registry.
+
+    A registered root is a concrete type; a `&T`/`*T` local names the pointee,
+    so also offer the dereferenced type at the address the pointer holds.
+    """
+    out = []
+    typ = value.GetType()
+    addr = value.GetLoadAddress()
+    if addr != lldb.LLDB_INVALID_ADDRESS:
+        out.append((typ.GetName(), addr))
+        out.append((typ.GetDisplayTypeName(), addr))
+    if typ.IsReferenceType() or typ.IsPointerType():
+        pointee = value.Dereference()
+        target = value.GetValueAsUnsigned()
+        if pointee.IsValid() and target:
+            out.append((pointee.GetType().GetName(), target))
+            out.append((pointee.GetType().GetDisplayTypeName(), target))
+    return out
+
+
+def _match(entries, value):
+    names = {}
+    for name, addr in _candidates(value):
+        key = _normalize(name)
+        if key:
+            names.setdefault(key, addr)
+    size = value.GetType().GetByteSize()
+    for entry in entries:
+        if entry["name"] in names and (not size or entry["size"] == size):
+            return entry, names[entry["name"]]
+    raise Error("unregistered type: " + (value.GetType().GetName() or "<unknown>")
+                + "\n  registered: " + ", ".join(sorted(e["name"] for e in entries)))
+
+
+def render(target, process, frame, value, overrides):
+    module, entries = discover(target, process, frame)
+    entry, address = _match(entries, value)
+    options = dict(DEFAULTS)
+    options.update(overrides)
+    mode = MODES[options["mode"]] if options.get("mode") else 0
+    if mode and not entry["capabilities"] & mode:
+        raise Error("UNSUPPORTED: mode not registered for " + entry["name"])
+    if address % entry["align"]:
+        raise Error("value has no aligned addressable storage")
+    if not 0 < options["buffer_bytes"] <= module["capacity"]:
+        raise Error("buffer exceeds compiled capacity")
+
+    sequence = (process.GetUniqueID() << 16) ^ (address & 0xFFFF) ^ entry["slot"] ^ 0x9E37
+    sequence &= 0xFFFFFFFFFFFFFFFF
+    request = struct.pack("<10Q", 2, 80, sequence, entry["slot"], address, mode,
+                          options["buffer_bytes"], int(options["alternate"]),
+                          options["max_depth"], options["max_nodes"])
+    err = lldb.SBError()
+    process.WriteMemory(module["request"], request, err)
+    if not err.Success():
+        raise Error("write request: " + err.GetCString())
+
+    call = (f"((unsigned long long (*)(unsigned long long))0x{module['dispatcher']:x})"
+            f"(0x{module['request']:x})")
+    opts = lldb.SBExpressionOptions()
+    opts.SetIgnoreBreakpoints(True)
+    opts.SetUnwindOnError(True)
+    opts.SetTryAllThreads(False)
+    opts.SetFetchDynamicValue(lldb.eNoDynamicValues)
+    opts.SetTimeoutInMicroSeconds(max(1, options["timeout_ms"]) * 1000)
+    result = frame.EvaluateExpression(call, opts)
+    if not result.GetError().Success():
+        raise Error("target call failed: " + result.GetError().GetCString())
+    status = result.GetValueAsUnsigned()
+
+    seq, returned, length, outcome, _nodes = struct.unpack(
+        "<5Q", _read(process, module["response"], 40))
+    if seq != sequence or returned != status or length > options["buffer_bytes"]:
+        raise Error("invalid or stale response")
+    if status not in (0, 1):
+        raise Error(STATUS.get(status, str(status)))
+    text = _read(process, module["output"], length).decode("utf-8")
+    if status == 1:
+        text += " <dbgvis: " + TRUNCATION.get(outcome, "limited") + ">"
+    return text
+
+
+def _parse(command):
+    """Split `[-m MODE] [-b BYTES] [-a] [--] EXPR` like the GDB command."""
+    overrides = {}
+    tokens = shlex.split(command)
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            i += 1
+            break
+        if token in ("-m", "--mode"):
+            value = tokens[i + 1]
+            if value not in {"native", *MODES}:
+                raise Error("invalid mode: " + value)
+            overrides["mode"] = None if value == "native" else value
+            i += 2
+        elif token in ("-b", "--buffer"):
+            overrides["buffer_bytes"] = int(tokens[i + 1])
+            i += 2
+        elif token in ("-a", "--alternate"):
+            overrides["alternate"] = True
+            i += 1
+        elif token.startswith("-"):
+            raise Error("unknown print option: " + token)
+        else:
+            break
+    expr = " ".join(tokens[i:]).strip()
+    if not expr:
+        raise Error("missing variable expression")
+    return overrides, expr
+
+
+def dbgvis(debugger, command, exe_ctx, result, internal_dict):
+    try:
+        overrides, expr = _parse(command)
+        frame = exe_ctx.GetFrame()
+        if not frame or not frame.IsValid():
+            raise Error("no stopped frame; run to a breakpoint first")
+        value = frame.EvaluateExpression(expr)
+        if not value.GetError().Success():
+            raise Error("cannot evaluate `" + expr + "`: " + value.GetError().GetCString())
+        process = exe_ctx.GetProcess()
+        target = exe_ctx.GetTarget()
+        result.AppendMessage(render(target, process, frame, value, overrides))
+    except Error as error:
+        result.SetError(str(error))
+
+
+def dbgvis_types(debugger, command, exe_ctx, result, internal_dict):
+    try:
+        _module, entries = discover(exe_ctx.GetTarget(), exe_ctx.GetProcess(), exe_ctx.GetFrame())
+        if not entries:
+            result.AppendMessage("no registered types")
+            return
+        caps = {2: "visualize", 4: "debug", 8: "display"}
+        for entry in entries:
+            modes = " ".join(name for bit, name in caps.items() if entry["capabilities"] & bit)
+            result.AppendMessage(f"[{entry['slot']}] {entry['name']}  ({modes or 'none'})")
+    except Error as error:
+        result.SetError(str(error))
+
+
+def __lldb_init_module(debugger, internal_dict):
+    module = __name__
+    debugger.HandleCommand(f"command script add -o -f {module}.dbgvis dbgvis-print")
+    debugger.HandleCommand(f"command script add -o -f {module}.dbgvis_types dbgvis-types")
+    # Convenience: `dbgvis` regex command dispatching `print`/`p`/`types`/`t`.
+    debugger.HandleCommand(
+        "command regex dbgvis "
+        "'s/^(print|p) +(.+)$/dbgvis-print %2/' "
+        "'s/^(types|t)$/dbgvis-types/'"
+    )
+    print("dbgvis: LLDB bridge loaded (dbgvis print EXPR | dbgvis types)")

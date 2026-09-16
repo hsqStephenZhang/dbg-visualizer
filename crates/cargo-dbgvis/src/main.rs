@@ -19,6 +19,12 @@ const WRAPPER_PY: &str = include_str!("../../../tools/auto-register/wrapper.py")
 const DRIVER_RS: &str = include_str!("../../../tools/auto-register/driver.rs");
 const TRACKED_RS: &str = include_str!("../../../tools/auto-register/tracked.rs");
 
+// Embedded debugger bridges. GDB's also rides inside the artifact via
+// `#[debugger_visualizer]`; LLDB has no such auto-load, so `cargo dbgvis script`
+// writes them to the target directory for a manual `command script import` / `source`.
+const GDB_PY: &str = include_str!("../../../crates/dbgvis-runtime/gdb.py");
+const LLDB_PY: &str = include_str!("../../../crates/dbgvis-runtime/lldb.py");
+
 /// The nightly the driver was last verified against. NOT a hard gate: `setup`
 /// compiles the driver against whatever nightly is active and records that exact
 /// build, so any nightly whose rustc-internal (`rustc_private`) API the driver still
@@ -33,6 +39,8 @@ cargo dbgvis <command>
   doctor    check the toolchain, rustc-dev, and the installed driver
   home      print DBGVIS_HOME
   config    print a .cargo/config.toml snippet for a project (needs BIN)
+  script    write the debugger bridge(s) to a dir (default target/dbgvis)
+              [--gdb|--lldb|--all] [DIR]; prints the load command for each
   uninstall remove DBGVIS_HOME (the driver, wrapper, and scan plans)
   help      this message
 
@@ -323,6 +331,51 @@ fn doctor() -> Result<(), String> {
     }
 }
 
+/// Write the debugger bridge scripts into a directory and print how to load each.
+/// Flags select which bridge; the first non-flag argument overrides the directory.
+fn script(args: &[OsString]) -> Result<(), String> {
+    let mut gdb = false;
+    let mut lldb = false;
+    let mut dir: Option<PathBuf> = None;
+    for arg in args {
+        match arg.to_str() {
+            Some("--gdb") => gdb = true,
+            Some("--lldb") => lldb = true,
+            Some("--all") => {
+                gdb = true;
+                lldb = true;
+            }
+            Some(flag) if flag.starts_with("--") => {
+                return Err(format!("unknown script option `{flag}`"));
+            }
+            _ => dir = Some(PathBuf::from(arg)),
+        }
+    }
+    // Default to both bridges so a plain `cargo dbgvis script` is useful.
+    if !gdb && !lldb {
+        gdb = true;
+        lldb = true;
+    }
+    let dir = dir.unwrap_or_else(|| PathBuf::from("target/dbgvis"));
+    fs::create_dir_all(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
+    // (filename, contents, how to load it in the debugger).
+    let mut wrote = Vec::new();
+    if gdb {
+        wrote.push(("gdb.py", GDB_PY, "source"));
+    }
+    if lldb {
+        wrote.push(("lldb.py", LLDB_PY, "command script import"));
+    }
+    for (name, contents, load) in &wrote {
+        let path = dir.join(name);
+        fs::write(&path, contents).map_err(|error| format!("write {}: {error}", path.display()))?;
+        let full = path.canonicalize().unwrap_or(path).display().to_string();
+        println!("wrote {full}");
+        println!("  load it with:  {load} {full}");
+    }
+    Ok(())
+}
+
 fn run(args: &[OsString]) -> Result<(), String> {
     let command = args.first().and_then(|a| a.to_str()).unwrap_or("help");
     match command {
@@ -340,6 +393,7 @@ fn run(args: &[OsString]) -> Result<(), String> {
             print!("{}", config_snippet(&home(), bin));
             Ok(())
         }
+        "script" => script(&args[1..]),
         "uninstall" => {
             let home = home();
             // Only remove a directory that looks like ours, never an arbitrary path a

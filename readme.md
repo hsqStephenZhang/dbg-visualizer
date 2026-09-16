@@ -17,8 +17,13 @@ its identity, the same type with its free lifetimes replaced by `'static`, while
 formatter stays lifetime-generic. A same-name but different-identity type is rejected
 even when its size/align match: names and layout are not type identity.
 
-The current backend is **nightly specialization + GDB v2**, with no v1/LLDB
-compatibility layer. [examples/explicit.rs](examples/explicit.rs) shows `derive(Visualize)`
+The current backend is **nightly specialization + GDB v2**, with no v1 compatibility
+layer. An **experimental LLDB bridge** drives the same mailbox ABI: `cargo dbgvis script
+--lldb` writes `target/dbgvis/lldb.py`, which you load by hand (`command script import
+target/dbgvis/lldb.py`) since LLDB has no `.debug_gdb_scripts` auto-load. It reuses the
+runtime unchanged and offers `dbgvis print EXPR`; type matching is best-effort name
+reconciliation rather than the GDB bridge's DWARF-shape comparison.
+[examples/explicit.rs](examples/explicit.rs) shows `derive(Visualize)`
 plus explicit registration; [examples/demo.rs](examples/demo.rs) keeps `Debug` types and
 registers them through the experimental driver. Neither example is feature-gated; the
 runtime still defaults to `native`/`manual`, and loading the script does not call target
