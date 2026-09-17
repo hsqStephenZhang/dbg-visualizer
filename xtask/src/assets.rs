@@ -5,15 +5,30 @@
 //! debugger bridges rather than reaching out with `include_str!("../../..")`. This gate
 //! fails if a copy drifts from its source; `cargo xtask assets --sync` refreshes them.
 
-use crate::harness::{root, Failure, Result};
+use crate::harness::{Failure, Result, root};
 
 /// (canonical source, vendored copy) relative to the repo root.
 const PAIRS: &[(&str, &str)] = &[
-    ("tools/auto-register/wrapper.py", "crates/cargo-dbgvis/assets/wrapper.py"),
-    ("tools/auto-register/driver.rs", "crates/cargo-dbgvis/assets/driver.rs"),
-    ("tools/auto-register/tracked.rs", "crates/cargo-dbgvis/assets/tracked.rs"),
-    ("crates/dbgvis-runtime/gdb.py", "crates/cargo-dbgvis/assets/gdb.py"),
-    ("crates/dbgvis-runtime/lldb.py", "crates/cargo-dbgvis/assets/lldb.py"),
+    (
+        "tools/auto-register/wrapper.py",
+        "crates/cargo-dbgvis/assets/wrapper.py",
+    ),
+    (
+        "tools/auto-register/driver.rs",
+        "crates/cargo-dbgvis/assets/driver.rs",
+    ),
+    (
+        "tools/auto-register/tracked.rs",
+        "crates/cargo-dbgvis/assets/tracked.rs",
+    ),
+    (
+        "crates/dbgvis-runtime/gdb.py",
+        "crates/cargo-dbgvis/assets/gdb.py",
+    ),
+    (
+        "crates/dbgvis-runtime/lldb.py",
+        "crates/cargo-dbgvis/assets/lldb.py",
+    ),
 ];
 
 pub fn run(sync: bool) -> Result {
