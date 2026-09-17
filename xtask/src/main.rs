@@ -14,6 +14,7 @@
 
 #[macro_use]
 mod harness;
+mod assets;
 mod autoregister;
 mod compiler;
 mod integration;
@@ -28,6 +29,7 @@ cargo xtask <gate> [options]
   integration [--faults --lto --relocated]  real rust-gdb scenarios
   autoregister [--gdb]                  experimental two-pass registration driver
   visibility [--gdb]                    module/function/type visibility matrix
+  assets [--sync]                       verify/refresh cargo-dbgvis vendored assets
   driver                                build the auto-register rustc driver only
   all                                   every gate above, with --gdb and all scenarios
   help                                  this message";
@@ -56,6 +58,7 @@ fn main() {
         }),
         "autoregister" => autoregister::run(has("--gdb")),
         "visibility" => visibility::run(has("--gdb")),
+        "assets" => assets::run(has("--sync")),
         "driver" => autoregister::build_driver(),
         "all" => run_all(),
         other => {

@@ -2,6 +2,12 @@
 name = "dbgvis"
 version = "0.2.0"
 edition = "2024"
+description = "Render a value's logical Debug/Display/Visualize view live in GDB or LLDB."
+keywords = ["dbgvis", "debugger", "gdb", "lldb", "visualizer"]
+categories = ["development-tools::debugging"]
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [features]
 default = []

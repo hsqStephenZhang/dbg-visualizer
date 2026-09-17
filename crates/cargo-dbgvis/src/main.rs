@@ -14,16 +14,19 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
-// Embedded at build time from the driver's own sources.
-const WRAPPER_PY: &str = include_str!("../../../tools/auto-register/wrapper.py");
-const DRIVER_RS: &str = include_str!("../../../tools/auto-register/driver.rs");
-const TRACKED_RS: &str = include_str!("../../../tools/auto-register/tracked.rs");
+// Embedded at build time. The canonical sources live in `tools/auto-register/` and
+// `crates/dbgvis-runtime/`; `assets/` holds committed copies so this crate is
+// self-contained when published (`cargo publish` packages only files under the crate
+// root). `cargo xtask assets` checks the copies against the canonical files.
+const WRAPPER_PY: &str = include_str!("../assets/wrapper.py");
+const DRIVER_RS: &str = include_str!("../assets/driver.rs");
+const TRACKED_RS: &str = include_str!("../assets/tracked.rs");
 
-// Embedded debugger bridges. GDB's also rides inside the artifact via
-// `#[debugger_visualizer]`; LLDB has no such auto-load, so `cargo dbgvis script`
-// writes them to the target directory for a manual `command script import` / `source`.
-const GDB_PY: &str = include_str!("../../../crates/dbgvis-runtime/gdb.py");
-const LLDB_PY: &str = include_str!("../../../crates/dbgvis-runtime/lldb.py");
+// Debugger bridges. GDB's also rides inside the artifact via `#[debugger_visualizer]`;
+// LLDB has no such auto-load, so `cargo dbgvis script` writes them to the target
+// directory for a manual `command script import` / `source`.
+const GDB_PY: &str = include_str!("../assets/gdb.py");
+const LLDB_PY: &str = include_str!("../assets/lldb.py");
 
 /// The nightly the driver was last verified against. NOT a hard gate: `setup`
 /// compiles the driver against whatever nightly is active and records that exact

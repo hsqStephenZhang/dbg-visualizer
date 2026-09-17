@@ -2,10 +2,15 @@
 name = "dbg-visualizer"
 version = "0.1.0"
 edition = "2024"
+publish = false  # the workspace root holds the examples/tests, not a published crate
 
 [workspace]
 members = ["crates/dbgvis-runtime", "crates/dbgvis", "crates/dbgvis-macros", "crates/cargo-dbgvis", "xtask"]
 resolver = "2"
+
+[workspace.package]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/hsqStephenZhang/dbg-visualizer"
 
 [dependencies]
 bytes = "1.11.0"

@@ -2,6 +2,11 @@
 name = "dbgvis-macros"
 version = "0.2.0"
 edition = "2024"
+description = "Derive and attribute macros for dbgvis (Visualize, register, register_type!)."
+keywords = ["dbgvis", "debugger", "derive", "macros"]
+categories = ["development-tools::debugging"]
+license.workspace = true
+repository.workspace = true
 
 [lib]
 proc-macro = true

@@ -2,6 +2,11 @@
 name = "dbgvis-runtime"
 version = "0.2.0"
 edition = "2024"
+description = "Runtime, mailbox ABI, and GDB/LLDB bridge for dbgvis debugger visualization."
+keywords = ["dbgvis", "debugger", "gdb", "lldb", "visualizer"]
+categories = ["development-tools::debugging"]
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 linkme = "0.3.37"

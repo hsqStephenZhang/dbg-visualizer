@@ -2,8 +2,12 @@
 name = "cargo-dbgvis"
 version = "0.2.0"
 edition = "2021"
-description = "Install and manage the experimental dbgvis auto-registration driver."
-publish = false
+description = "Install and manage the experimental dbgvis auto-registration driver and debugger bridges."
+keywords = ["dbgvis", "cargo-subcommand", "debugger", "gdb", "lldb"]
+categories = ["development-tools::debugging", "command-line-utilities"]
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
 
 [[bin]]
 name = "cargo-dbgvis"
