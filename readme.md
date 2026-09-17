@@ -1,116 +1,118 @@
 # Rust debugger visualizer
 
-`#[derive(dbgvis::Visualize)]` renders a value's *logical* view recursively, inside
-Rust: an ordinary field prefers `Visualize`, then falls back to `Debug`, then
-`Display`. `HashMap`/`Vec` and the like go through their public iteration APIs -- no
-parsing of internal storage, and no paging for the user to write.
+`dbgvis` renders a value's *logical* view — a type's `Visualize`, else `Debug`, else
+`Display` — live in the debugger at a breakpoint, instead of reaching for `dbg!` or
+`tracing`. The formatter runs in-process and the debugger just asks for it; `HashMap`/`Vec`
+and the like go through their public iteration APIs, recursively, with no paging to write.
 
-A non-generic derive also registers a root entry, collected across crates by `linkme`;
-`main` only needs `dbgvis::enable!()`, with no central registration module. Reuse
-`Debug` on a type with `#[dbgvis::register]`; register a third-party or generic concrete
-instance with `dbgvis::register_type!(T)`. The type-level `#[dbgvis(no_register)]` turns
-auto-registration off.
+## Requirements
 
-When several crates register the same concrete type, the runtime compares concrete-type
-`TypeId`s before merging their modes and formatter functions. A borrowed root uses, as
-its identity, the same type with its free lifetimes replaced by `'static`, while the
-formatter stays lifetime-generic. A same-name but different-identity type is rejected
-even when its size/align match: names and layout are not type identity.
-
-The current backend is **nightly specialization + GDB v2**, with no v1 compatibility
-layer. An **experimental LLDB bridge** drives the same mailbox ABI: `cargo dbgvis script
---lldb` writes `target/dbgvis/lldb.py`, which you load by hand (`command script import
-target/dbgvis/lldb.py`) since LLDB has no `.debug_gdb_scripts` auto-load. It reuses the
-runtime unchanged and offers `dbgvis print EXPR`; type matching reconciles LLDB's type
-names with the registry's Rust spellings (LLDB gives no type for an anchor symbol, so the
-GDB bridge's DWARF-shape comparison is unavailable) and refuses types LLDB cannot tell
-apart, such as ones differing only by lifetime or const generic.
-[examples/explicit.rs](examples/explicit.rs) shows `derive(Visualize)`
-plus explicit registration; [examples/demo.rs](examples/demo.rs) keeps `Debug` types and
-registers them through the experimental driver. Neither example is feature-gated; the
-runtime still defaults to `native`/`manual`, and loading the script does not call target
-functions on its own. The optional per-project feature setup is in the usage guide.
+- **A nightly toolchain with the `rustc-dev` component.** The runtime uses
+  `#![feature(specialization)]`, and the auto-registration driver links `rustc_private`.
+  `rustup toolchain install nightly --component rustc-dev`. (The `cargo-dbgvis` CLI itself
+  builds on stable.)
+- **Linux x86_64.** GDB is the primary frontend — its script is embedded into the artifact
+  automatically. An experimental LLDB bridge is loaded by hand. Apple/MSVC targets do not
+  emit `.debug_gdb_scripts`.
+- **Debug info.** The final binary must keep `debug = 2` and stay unstripped, or the
+  embedded script and type anchors both disappear.
 
 ## Quick start
 
+The `explicit` example registers its types by hand, so it needs no driver:
+
 ```sh
 cargo build --example explicit
-rust-gdb -iex "add-auto-load-safe-path /absolute/path/dbg-visualizer/target/debug/examples/explicit" target/debug/examples/explicit
+rust-gdb -iex "add-auto-load-safe-path $PWD/target/debug/examples/explicit" target/debug/examples/explicit
 ```
-
-Replace the safe-path with the binary's real absolute path; do not use `*`. The GDB
-script ships inside the runtime and is embedded into the artifact, so a consumer project
-needs no `build.rs` or Python copy of its own.
 
 ```text
 break explicit::checkpoint
 run
 up
-dbgvis print app
-dbgvis print map
-dbgvis print external_map
-dbgvis print --mode display address
-dbgvis print --buffer 8 map
-dbgvis config summary.mode auto
-dbgvis config execution automatic
-print point
+dbgvis print app            # AppState { points: {"app": [Some(Point { x: 5, y: 6 })]}, ... }
+dbgvis print --all          # every registered local in the frame (alias: dbgvis all)
+dbgvis types                # list registered types
 ```
 
-`map` renders as:
+Use the binary's real absolute path in the safe-path, not `*`. The GDB script ships inside
+the runtime, so a consumer project needs no `build.rs` or Python copy of its own.
 
-```text
-{"points": [Some(Point { x: 1, y: 2 }), None]}
-```
+## Use it in your project
 
-The self-contained `AppState` exercises third-party fields, `skip`, and nested
-containers. There are also three `IndexMap` instances, a `hashbrown::HashMap`, `Bytes`,
-`SocketAddr`, borrowed/const generics, and a ZST hasher with no `Debug`. Cross-crate and
-feature-toggle coverage is driven from temporary projects the test suite generates; the
-workspace keeps only the three core crates plus an `xtask` verification entry point.
+### Recommended: the `cargo dbgvis` driver
 
-To run `demo`, which needs no hand-written root registration, from the repository root
-(the driver needs a nightly toolchain with `rustc-dev`; it is compiled against whatever
-nightly is active and the build must then use that same nightly -- last verified on
-`rustc 1.99.0-nightly (12c36e253 2026-08-10)`):
+The driver auto-registers the concrete types a debug session wants, with no hand-written
+`register_type!`:
 
 ```sh
-cargo xtask driver
-DBGVIS_AUTO_CRATE=demo RUSTC_WORKSPACE_WRAPPER="$PWD/tools/auto-register/wrapper.py" CARGO_TARGET_DIR=target/auto-register/examples cargo build --example demo
-rust-gdb -iex "add-auto-load-safe-path /absolute/path/dbg-visualizer/target/auto-register/examples/debug/examples/demo" target/auto-register/examples/debug/examples/demo
+cargo install --path crates/cargo-dbgvis        # unpublished; from a checkout for now
+cargo dbgvis setup                              # under your nightly: build the driver, record its toolchain
+cargo dbgvis config my-bin >> .cargo/config.toml
+cargo +nightly build                            # build through the driver (same nightly as setup)
 ```
 
-Outside this repository, install the driver instead of using `cargo xtask`:
-`cargo install --path crates/cargo-dbgvis` (unpublished; from a checkout for now), then
-`cargo dbgvis setup` compiles it into a self-contained `DBGVIS_HOME` and `cargo dbgvis
-config <bin>` prints the `.cargo/config.toml` to point a project at it -- no repository on
-the build path. `setup` is not pinned to one exact build: run it under any nightly with
-`rustc-dev` and it compiles a driver for that nightly and records it, so each nightly gets
-its own matching driver; the wrapper then requires the project to build under that same
-nightly. `cargo dbgvis doctor` checks the toolchain is nightly, rustc-dev is present, and
-the installed driver matches the active toolchain.
+`cargo dbgvis config` writes a `.cargo/config.toml` pointing the build at the driver
+(`rustc-workspace-wrapper`, `DBGVIS_HOME`, `DBGVIS_AUTO_CRATE`). By default the driver
+scans the executable's own functions; `DBGVIS_SCAN_DEPS=1` or `DBGVIS_SCAN_CRATES=regex.*`
+extends the scan into libraries (at the cost of keeping their MIR).
 
-Break at `demo::checkpoint`, then after `run`, `up` use `dbgvis p map` or
-`dbgvis p index_borrowed`. A plain `cargo build --example demo` does not enable the
-driver, so do not expect those roots to be registered from it. The driver scans only the
-executable's own functions by default; for a "logic in a library, `main` is just an entry
-point" layout, `DBGVIS_SCAN_DEPS=1` is needed to reach a library's locals, at the cost of
-building the workspace libraries with `-Zalways-encode-mir` and registering more types.
-Details in the [two-pass auto-registration experiment](docs/auto-registration-experiment.md).
-`dbgvis p -m native "hello"` keeps the expression's quotes; `--` ends the print options.
-See `dbgvis help` for the full command set.
+| Command | What it does |
+| --- | --- |
+| `setup` | compile the driver into `DBGVIS_HOME`, record its toolchain |
+| `doctor` | check nightly, `rustc-dev`, and that the driver matches the toolchain |
+| `config <bin>` | print the `.cargo/config.toml` snippet for a project |
+| `script [--gdb\|--lldb\|--all] [DIR]` | write the debugger bridge(s) to a dir (default `target/dbgvis`) |
+| `home` / `uninstall` | print / remove `DBGVIS_HOME` |
+
+`setup` is not pinned to one build: run it under any nightly with `rustc-dev` and it
+compiles a matching driver and records it; the wrapper then requires the project to build
+under that same nightly, and `cargo dbgvis doctor` verifies it.
+
+### Alternative: register by hand
+
+Skip the driver and register roots yourself, then `enable!()`:
+
+```rust
+#[derive(dbgvis::Visualize)] struct AppState { /* ... */ }     // a non-generic derive also registers a root
+#[dbgvis::register] #[derive(Debug)] struct Cfg { /* ... */ }  // reuse an existing Debug
+dbgvis::register_type!(bytes::Bytes);                          // a third-party or generic concrete instance
+fn main() { dbgvis::enable!(); /* ... */ }
+```
+
+Roots are collected across crates by `linkme`; `main` needs only `enable!()`, no central
+module. `#[dbgvis(no_register)]` turns a type's auto-root off. The [usage
+guide](docs/usage-guide.md) covers field attributes and feature-gating.
+
+## Debugging with LLDB (experimental)
+
+LLDB has no `.debug_gdb_scripts` auto-load, so generate the bridge and load it by hand:
+
+```sh
+cargo dbgvis script --lldb          # writes target/dbgvis/lldb.py
+```
+
+```text
+(lldb) command script import target/dbgvis/lldb.py
+(lldb) dbgvis print app
+(lldb) dbgvis all
+```
+
+Same commands and mailbox as GDB, and it works under VSCode CodeLLDB via `initCommands`.
+Type matching is name-based rather than the GDB bridge's DWARF-shape comparison, so it
+refuses types LLDB cannot tell apart (e.g. differing only by lifetime or const generic).
 
 ## Documentation
 
-- [Usage guide](docs/usage-guide.md): the integration API, feature toggles, GDB commands, and safety boundaries.
-- [Protocol v2](docs/protocol-v2.md): registration, the mailbox, and bounded text.
-- [Phase-two acceptance record](docs/phase-two-acceptance.md): actual tests, known limits, and open items.
-- [Q0 validation](docs/archive/q0-validation.md): why nightly (archived; the toolchain decision is settled).
-- [Two-pass auto-registration experiment](docs/auto-registration-experiment.md): the driver prototype that removes per-type hand registration, its validation, and known limits (optional; it does not change the default build).
+- [Usage guide](docs/usage-guide.md) — setup, the registration API, debugger commands, safety.
+- [Auto-registration experiment](docs/auto-registration-experiment.md) — the driver, its scope and limits.
+- [Protocol v2](docs/protocol-v2.md) — the mailbox ABI, for reference.
+- [Phase-two acceptance record](docs/phase-two-acceptance.md) — tests, known limits, open items.
+- [Q0 validation](docs/archive/q0-validation.md) — why nightly (archived).
 
 ## Verification
 
 ```sh
-cargo fetch --locked
 cargo fmt --all -- --check
 cargo clippy --offline --workspace --all-targets --all-features -- -D warnings
 cargo test --offline --workspace --all-features
@@ -119,17 +121,8 @@ cargo xtask integration --faults --lto --relocated
 cargo xtask autoregister --gdb
 ```
 
-The verified environment is Linux x86_64, GDB 17.1, rustc 1.99.0-nightly
-(12c36e253 2026-08-10). The integration suite needs local ptrace permission; on non-Linux
-platforms such as macOS it is skipped outright (Apple/MSVC targets do not emit
-`.debug_gdb_scripts`), while the other four steps run as usual. A debug build must keep
-`debug = 2` and stay unstripped, or the embedded script and anchor type information both
-disappear. Automatic selection renders a value with none of the three capabilities as a
-`<unformattable TypeName>` placeholder instead of failing compilation; explicit `via` and
-root modes are still checked at compile time.
-
-The bounded buffer does not guarantee a user `fmt` is pure, allocation-free, or
-non-blocking. Core dumps and values that cannot be located reliably fall back to native.
-The core is implemented, and `cargo-dbgvis` (`setup`/`doctor`/`config`/`uninstall`)
-installs and manages the experimental driver outside the repository; a full release
-dry-run is not done, and the crates are unpublished.
+Verified on Linux x86_64, GDB 17.1, rustc 1.99.0-nightly (12c36e253 2026-08-10). The
+integration suite needs local ptrace permission and is skipped on non-Linux. A value with
+none of the three capabilities renders as a `<unformattable T>` placeholder instead of
+failing compilation; explicit `via` and root modes are still checked at compile time. The
+crates are unpublished and a full release dry-run is not done.
