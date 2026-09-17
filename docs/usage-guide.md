@@ -53,10 +53,12 @@ DBGVIS_AUTO_CRATE = "my-bin"
 
 `setup` is not pinned to one build — run it under any nightly with `rustc-dev`, it compiles
 a matching driver and records the toolchain, and the wrapper then requires the project to
-build under that same nightly. Scope of the scan: by default only the executable's own
-functions; `DBGVIS_SCAN_DEPS=1` also reaches workspace-library locals (building those with
-`-Zalways-encode-mir`), and `DBGVIS_SCAN_CRATES=regex.*` selects dependency crates by
-regex. A plain `cargo build` without the wrapper does not enable the driver. See the
+build under that same nightly. `DBGVIS_AUTO_CRATE` names the bin/example to instrument, or
+`*` for every bin and example in the build (build scripts and test harnesses are excluded).
+Scope of the scan: by default only the executable's own functions; `DBGVIS_SCAN_DEPS=1`
+also reaches workspace-library locals (building those with `-Zalways-encode-mir`), and
+`DBGVIS_SCAN_CRATES=regex.*` selects dependency crates by regex. A plain `cargo build`
+without the wrapper does not enable the driver. See the
 [auto-registration experiment](auto-registration-experiment.md) for its limits.
 
 ## Debugger commands

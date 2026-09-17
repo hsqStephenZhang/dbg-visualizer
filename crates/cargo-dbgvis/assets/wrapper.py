@@ -171,7 +171,19 @@ def main():
         sys.exit(f"dbgvis auto: invalid DBGVIS_SCAN_CRATES pattern `{error.pattern}`: {error}")
     scan_deps = scan_deps or bool(compiled)
 
-    if name != selected or crate_type != "bin":
+    # DBGVIS_AUTO_CRATE names the executable to instrument; "*" instruments every bin and
+    # example target. Build scripts and test harnesses also compile as `bin` but are not
+    # the program being debugged (a test may not even link the runtime), so exclude them.
+    # `scan_key` keeps the shared lib-record path filesystem-safe when the value is "*".
+    is_target = (
+        crate_type == "bin"
+        and not name.startswith("build_script")
+        and "--test" not in args
+        and (selected == "*" or name == selected)
+    )
+    scan_key = "__all__" if selected == "*" else selected
+
+    if not is_target:
         # Every workspace crate that is not the selected executable. A non-generic
         # function is codegened in its own crate, so its locals are invisible to the
         # executable's scan unless the MIR survives; keep it and record the crate name
@@ -181,7 +193,7 @@ def main():
             if compiled:
                 keep = any(p.fullmatch(name) for p in compiled)
             else:
-                recorded = scan_directory(args, selected)
+                recorded = scan_directory(args, scan_key)
                 keep = recorded is not None
                 if keep:
                     recorded.mkdir(parents=True, exist_ok=True)
@@ -200,7 +212,7 @@ def main():
         env["DBGVIS_PASSTHROUGH"] = "1"
         return subprocess.call([str(DRIVER), *args], env=env, close_fds=False)
     digest = hashlib.sha256((str(Path.cwd()) + repr(args)).encode()).hexdigest()[:20]
-    directory = PLANS / f"{selected}-{digest}"
+    directory = PLANS / f"{name}-{digest}"
     directory.mkdir(parents=True, exist_ok=True)
     plan = directory / "register.rs"
     env["DBGVIS_PLAN"] = str(plan)
@@ -214,7 +226,7 @@ def main():
     if compiled:
         env["DBGVIS_SCAN_PATTERNS"] = ",".join(patterns)
     else:
-        recorded = scan_directory(args, selected) if scan_deps else None
+        recorded = scan_directory(args, scan_key) if scan_deps else None
         env["DBGVIS_SCAN_PATTERNS"] = ",".join(
             sorted(re.escape(p.name) for p in recorded.iterdir())
             if recorded is not None and recorded.is_dir()
@@ -227,7 +239,7 @@ def main():
     env["DBGVIS_SYSROOT"] = sysroot
     with (directory / "invocations.log").open("a") as log:
         log.write(f"{time.time_ns()} {os.getpid()}\n")
-    print(f"dbgvis auto: scan {selected} -> {plan}", file=sys.stderr)
+    print(f"dbgvis auto: scan {name} -> {plan}", file=sys.stderr)
     with tempfile.TemporaryDirectory(prefix="scan-", dir=directory) as scan:
         code = subprocess.call([str(DRIVER), *scan_args(args, Path(scan))], env=env, close_fds=False)
     if code:
@@ -241,7 +253,7 @@ def main():
             if "=" in line:
                 args = args + ["--extern", line]
     env["DBGVIS_INJECT"] = "1"
-    print(f"dbgvis auto: compile {selected} with generated registrations", file=sys.stderr)
+    print(f"dbgvis auto: compile {name} with generated registrations", file=sys.stderr)
     return subprocess.call([str(DRIVER), *args], env=env, close_fds=False)
 
 

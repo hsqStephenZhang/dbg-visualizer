@@ -77,7 +77,7 @@ DebugOnly { count: 9 }
 
 examples/auto_poc.rs contains no container registration, and map is not a field of an already-derived struct. Point has no Debug, which proves that the HashMap really goes through Visualize recursion. The IndexMap reuses its own Debug, which does not mean an element-level Visualize adapter for third-party containers has been implemented.
 
-An ordinary `cargo build --example auto_poc` still builds and runs, but it will not auto-register these roots; the wrapper must be enabled. The consumer program still has to depend on dbgvis and call enable. DBGVIS_AUTO_CRATE is rustc's crate-name, and the first version only allows selecting a single bin/example; other compile requests are forwarded verbatim.
+An ordinary `cargo build --example auto_poc` still builds and runs, but it will not auto-register these roots; the wrapper must be enabled. The consumer program still has to depend on dbgvis and call enable. DBGVIS_AUTO_CRATE is rustc's crate-name; set it to a single bin/example name, or to `*` to instrument every bin and example target (build scripts and test harnesses, which also compile as `bin`, are excluded). Other compile requests are forwarded verbatim.
 
 ## How It Works
 
