@@ -46,7 +46,7 @@ The driver auto-registers the concrete types a debug session wants, with no hand
 `register_type!`:
 
 ```sh
-cargo install --path crates/cargo-dbgvis        # unpublished; from a checkout for now
+cargo install cargo-dbgvis                      # the CLI itself builds on stable
 cargo dbgvis setup                              # under your nightly: build the driver, record its toolchain
 cargo dbgvis config my-bin >> .cargo/config.toml
 cargo +nightly build                            # build through the driver (same nightly as setup)
@@ -71,7 +71,8 @@ under that same nightly, and `cargo dbgvis doctor` verifies it.
 
 ### Alternative: register by hand
 
-Skip the driver and register roots yourself, then `enable!()`:
+Skip the driver, add the dependency (`cargo add dbgvis --features derive`), register roots
+yourself, then `enable!()`:
 
 ```rust
 #[derive(dbgvis::Visualize)] struct AppState { /* ... */ }     // a non-generic derive also registers a root
@@ -124,5 +125,6 @@ cargo xtask autoregister --gdb
 Verified on Linux x86_64, GDB 17.1, rustc 1.99.0-nightly (12c36e253 2026-08-10). The
 integration suite needs local ptrace permission and is skipped on non-Linux. A value with
 none of the three capabilities renders as a `<unformattable T>` placeholder instead of
-failing compilation; explicit `via` and root modes are still checked at compile time. The
-crates are unpublished and a full release dry-run is not done.
+failing compilation; explicit `via` and root modes are still checked at compile time.
+`dbgvis`, `dbgvis-runtime`, `dbgvis-macros`, and `cargo-dbgvis` are published on crates.io
+(0.2.x); the backend is still experimental.

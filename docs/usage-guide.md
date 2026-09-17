@@ -27,7 +27,7 @@ The driver auto-registers the concrete types a debug session wants, so a project
 hand-written `register_type!`:
 
 ```sh
-cargo install --path crates/cargo-dbgvis     # unpublished; from a checkout for now
+cargo install cargo-dbgvis                   # the CLI itself builds on stable
 cargo dbgvis setup                           # under your nightly: build the driver, record its toolchain
 cargo dbgvis config my-bin >> .cargo/config.toml
 cargo +nightly build                         # build through the driver, same nightly as setup
@@ -144,7 +144,7 @@ automatically. To do it yourself, add the dependency (feature-gated is recommend
 [features]
 visualize = ["dep:dbgvis"]
 [dependencies]
-dbgvis = { path = "/absolute/path/dbg-visualizer/crates/dbgvis", optional = true, features = ["derive"] }
+dbgvis = { version = "0.2", optional = true, features = ["derive"] }
 ```
 
 ```rust

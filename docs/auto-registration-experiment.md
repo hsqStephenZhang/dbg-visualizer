@@ -21,8 +21,8 @@ rustc 1.99.0-nightly (12c36e253 2026-08-10)
 `cargo-dbgvis` embeds the wrapper and driver source into the binary; at `setup` time it writes them to a self-contained `DBGVIS_HOME` (default `$XDG_CACHE_HOME/dbgvis`) and compiles the driver there:
 
 ```sh
-cargo install cargo-dbgvis        # before release: cargo install --path crates/cargo-dbgvis
-cargo dbgvis setup                # must run under rustc 1.99.0-nightly (12c36e253) + rustc-dev
+cargo install cargo-dbgvis        # the CLI itself builds on stable
+cargo dbgvis setup                # must run under a nightly toolchain with rustc-dev
 cargo dbgvis doctor               # checks that the toolchain, rustc-dev, and driver are ready
 cargo dbgvis config my_bin        # prints a paste-ready .cargo/config.toml snippet
 ```
